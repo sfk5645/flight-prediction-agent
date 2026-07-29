@@ -31,6 +31,7 @@ def tool_predict_delay(
             distance=distance,
             origin_precip_mm=origin_precip_mm,
             origin_wind_kmh=origin_wind_kmh,
+            fetch_weather=False,
         )
     except FileNotFoundError as exc:
         return json.dumps({"error": str(exc)})

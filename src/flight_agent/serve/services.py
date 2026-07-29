@@ -137,6 +137,7 @@ def predict_delay(
     dest_wind_kmh: float | None = None,
     dest_weathercode: int | None = None,
     route_hist_pct_delay_15: float | None = None,
+    fetch_weather: bool = False,
 ) -> dict[str, Any]:
     enriched = _enrich_from_lake(
         op_unique_carrier=op_unique_carrier,
@@ -163,27 +164,28 @@ def predict_delay(
         if v is not None:
             enriched[k] = v
 
-    # Pull weather from lake when not provided
-    if origin_temp_c is None:
-        wx = get_weather(origin)
-        if wx.get("temperature_2m_mean") is not None:
-            enriched["origin_temp_c"] = float(wx["temperature_2m_mean"])
-        if wx.get("precipitation_sum") is not None:
-            enriched["origin_precip_mm"] = float(wx["precipitation_sum"])
-        if wx.get("windspeed_10m_max") is not None:
-            enriched["origin_wind_kmh"] = float(wx["windspeed_10m_max"])
-        if wx.get("weathercode") is not None:
-            enriched["origin_weathercode"] = int(wx["weathercode"])
-    if dest_temp_c is None:
-        wxd = get_weather(dest)
-        if wxd.get("temperature_2m_mean") is not None:
-            enriched["dest_temp_c"] = float(wxd["temperature_2m_mean"])
-        if wxd.get("precipitation_sum") is not None:
-            enriched["dest_precip_mm"] = float(wxd["precipitation_sum"])
-        if wxd.get("windspeed_10m_max") is not None:
-            enriched["dest_wind_kmh"] = float(wxd["windspeed_10m_max"])
-        if wxd.get("weathercode") is not None:
-            enriched["dest_weathercode"] = int(wxd["weathercode"])
+    # Optional live weather from R2 (slow). Agent should call the weather tool instead.
+    if fetch_weather:
+        if origin_temp_c is None:
+            wx = get_weather(origin)
+            if wx.get("temperature_2m_mean") is not None:
+                enriched["origin_temp_c"] = float(wx["temperature_2m_mean"])
+            if wx.get("precipitation_sum") is not None:
+                enriched["origin_precip_mm"] = float(wx["precipitation_sum"])
+            if wx.get("windspeed_10m_max") is not None:
+                enriched["origin_wind_kmh"] = float(wx["windspeed_10m_max"])
+            if wx.get("weathercode") is not None:
+                enriched["origin_weathercode"] = int(wx["weathercode"])
+        if dest_temp_c is None:
+            wxd = get_weather(dest)
+            if wxd.get("temperature_2m_mean") is not None:
+                enriched["dest_temp_c"] = float(wxd["temperature_2m_mean"])
+            if wxd.get("precipitation_sum") is not None:
+                enriched["dest_precip_mm"] = float(wxd["precipitation_sum"])
+            if wxd.get("windspeed_10m_max") is not None:
+                enriched["dest_wind_kmh"] = float(wxd["windspeed_10m_max"])
+            if wxd.get("weathercode") is not None:
+                enriched["dest_weathercode"] = int(wxd["weathercode"])
 
     row = pd.DataFrame(
         [

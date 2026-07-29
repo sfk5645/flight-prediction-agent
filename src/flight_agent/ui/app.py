@@ -20,6 +20,27 @@ get_settings.cache_clear()
 from flight_agent.agent.graph import ask_agent  # noqa: E402
 from flight_agent.serve import services  # noqa: E402
 
+
+@st.cache_resource(show_spinner=False)
+def _warm_runtime() -> str:
+    """Load model + open light R2 warehouse once per server process."""
+    try:
+        services.load_model()
+    except Exception as exc:  # noqa: BLE001
+        return f"model:{exc}"
+    try:
+        from flight_agent.ingest.warehouse import warehouse_available, warehouse_connection
+
+        if warehouse_available():
+            with warehouse_connection(read_only=True, light=True) as con:
+                con.execute("select 1").fetchone()
+        return "ok"
+    except Exception as exc:  # noqa: BLE001
+        return f"warehouse:{exc}"
+
+
+warm_status = _warm_runtime()
+
 st.title("Flight Delay Ops Agent")
 st.caption(
     "Ask about delay risk on LAX / JFK / ORD / DEN / ATL / IAD / DFW routes. "
@@ -28,14 +49,14 @@ st.caption(
 
 with st.sidebar:
     st.header("Model status")
-    try:
-        services.load_model()
-        st.success("Model loaded")
-    except FileNotFoundError as exc:
-        st.error(str(exc))
-        st.caption("Train locally or wait for GitHub Actions to push models/ to R2.")
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"Model load failed: {exc}")
+    if warm_status == "ok" or warm_status.startswith("warehouse:"):
+        try:
+            services.load_model()
+            st.success("Model loaded")
+        except Exception as exc:  # noqa: BLE001
+            st.error(str(exc))
+    else:
+        st.error(warm_status)
     metrics = services.load_metrics()
     if metrics.get("overall"):
         o = metrics["overall"]
@@ -55,26 +76,31 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# 1) Paint history first so the page never goes blank while waiting.
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 prompt = st.chat_input("Ask about a flight delay…")
+
+# 2) On submit: store user turn and rerun so the message is visible before work starts.
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    st.session_state.awaiting_reply = True
+    st.rerun()
+
+# 3) Answer exactly once after the user message is on screen.
+if st.session_state.get("awaiting_reply"):
+    st.session_state.awaiting_reply = False
+    question = st.session_state.messages[-1]["content"]
     with st.chat_message("assistant"):
-        status = st.status("Working on your question…", expanded=True)
-        try:
-            status.write("Calling Groq agent + lake tools…")
-            answer = ask_agent(prompt)
-            status.update(label="Done", state="complete")
-        except Exception as exc:  # noqa: BLE001
-            answer = (
-                f"Sorry — the agent hit an error and the UI stayed up so you can retry.\n\n"
-                f"`{type(exc).__name__}: {exc}`"
-            )
-            status.update(label="Failed", state="error")
+        with st.spinner("Consulting model + lake tools…"):
+            try:
+                answer = ask_agent(question)
+            except Exception as exc:  # noqa: BLE001
+                answer = (
+                    "Sorry — something went wrong. The page stayed up so you can retry.\n\n"
+                    f"`{type(exc).__name__}: {exc}`"
+                )
         st.markdown(answer)
     st.session_state.messages.append({"role": "assistant", "content": answer})
