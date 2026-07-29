@@ -16,5 +16,5 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-# Secrets → env, then the shared Streamlit UI (loads model from R2 if needed).
+# Shared UI (set_page_config is first Streamlit call inside this module).
 from flight_agent.ui import app as _app  # noqa: F401

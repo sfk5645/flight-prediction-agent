@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -20,6 +21,16 @@ MART_TABLES = (
     "flt_flights_clean",
     "flt_flights_with_weather",
 )
+
+# Small agg marts only — used by API / Streamlit agent (avoid multi‑GB flight tables).
+SERVE_MART_TABLES = (
+    "flt_airport_hour_stats",
+    "flt_carrier_delay_stats",
+    "flt_route_delay_stats",
+)
+
+_serve_con: duckdb.DuckDBPyConnection | None = None
+_serve_lock = threading.Lock()
 
 DUCKDB_R2_KEY = "warehouse/flight_agent.duckdb"
 CURATED_PREFIX = "curated/"
@@ -63,12 +74,12 @@ def configure_r2(con: duckdb.DuckDBPyConnection) -> None:
     con.execute("SET s3_region='auto';")
 
 
-def curated_on_r2() -> bool:
+def curated_on_r2(table: str = "flt_flights_with_weather") -> bool:
     settings = get_settings()
     if not settings.r2_configured:
         return False
     client = _client()
-    key = curated_key("flt_flights_with_weather")
+    key = curated_key(table)
     try:
         client.head_object(Bucket=settings.r2_bucket, Key=key)
         return True
@@ -78,7 +89,11 @@ def curated_on_r2() -> bool:
 
 def warehouse_available() -> bool:
     path = Path(get_settings().duckdb_path)
-    return path.exists() or curated_on_r2()
+    return (
+        path.exists()
+        or curated_on_r2("flt_route_delay_stats")
+        or curated_on_r2("flt_flights_with_weather")
+    )
 
 
 def export_marts_to_r2(*, local_db: Path | None = None) -> list[str]:
@@ -200,15 +215,27 @@ def push_warehouse_to_r2(*, delete_local: bool | None = None) -> dict[str, objec
     }
 
 
-def _attach_r2_views(con: duckdb.DuckDBPyConnection) -> None:
-    """Create views over curated Parquet (+ bronze weather) on R2."""
+def _attach_r2_views(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    light: bool = False,
+) -> None:
+    """Create views over curated Parquet on R2.
+
+    light=True: only small agg marts (API / Streamlit). Skips multi‑GB flight
+    tables and the full weather hive glob.
+    """
     configure_r2(con)
     settings = get_settings()
-    for table in MART_TABLES:
+    tables = SERVE_MART_TABLES if light else MART_TABLES
+    for table in tables:
         uri = curated_uri(table)
         con.execute(
             f"CREATE OR REPLACE VIEW {table} AS SELECT * FROM read_parquet('{uri}')"
         )
+    if light:
+        return
+
     weather_glob = f"s3://{settings.r2_bucket}/raw/weather/**/*.parquet"
     con.execute(
         f"""
@@ -228,13 +255,39 @@ def _attach_r2_views(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def _get_serve_r2_connection() -> duckdb.DuckDBPyConnection:
+    """Process-wide cached in-memory DuckDB with light R2 views attached."""
+    global _serve_con
+    with _serve_lock:
+        if _serve_con is None:
+            if not get_settings().r2_configured or not curated_on_r2(
+                "flt_route_delay_stats"
+            ):
+                raise FileNotFoundError(
+                    "Curated serve marts not found on R2. "
+                    "Run `flight dbt build --from-r2` then `flight warehouse push`."
+                )
+            _log("Opening cached light R2 warehouse (agg marts only)…")
+            con = duckdb.connect(":memory:")
+            _attach_r2_views(con, light=True)
+            _serve_con = con
+        return _serve_con
+
+
 @contextmanager
-def warehouse_connection(*, read_only: bool = True) -> Iterator[duckdb.DuckDBPyConnection]:
+def warehouse_connection(
+    *,
+    read_only: bool = True,
+    light: bool = False,
+) -> Iterator[duckdb.DuckDBPyConnection]:
     """
     Open the analytics warehouse.
 
     Prefer local DuckDB if present; otherwise query curated Parquet on R2
     via an in-memory DuckDB (no large local file required).
+
+    light=True (API/UI): reuse a cached connection over small agg marts only.
+    light=False (train/dbt): full marts + weather; connection is not cached.
     """
     settings = get_settings()
     db = Path(settings.duckdb_path)
@@ -246,6 +299,10 @@ def warehouse_connection(*, read_only: bool = True) -> Iterator[duckdb.DuckDBPyC
             con.close()
         return
 
+    if light:
+        yield _get_serve_r2_connection()
+        return
+
     if not settings.r2_configured or not curated_on_r2():
         raise FileNotFoundError(
             f"DuckDB missing at {db} and curated marts not found on R2. "
@@ -254,7 +311,7 @@ def warehouse_connection(*, read_only: bool = True) -> Iterator[duckdb.DuckDBPyC
 
     con = duckdb.connect(":memory:")
     try:
-        _attach_r2_views(con)
+        _attach_r2_views(con, light=False)
         yield con
     finally:
         con.close()

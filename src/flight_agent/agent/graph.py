@@ -109,7 +109,8 @@ def ask_agent(question: str) -> str:
                     SystemMessage(content=SYSTEM_PROMPT),
                     HumanMessage(content=question),
                 ]
-            }
+            },
+            config={"recursion_limit": 12},
         )
         messages = result["messages"]
         for msg in reversed(messages):
@@ -121,8 +122,15 @@ def ask_agent(question: str) -> str:
 
 
 def _fallback_answer(question: str, error: str) -> str:
-    """Heuristic fallback so demos work without Groq."""
+    """Heuristic fallback so demos work without Groq (keep lake calls light)."""
     q = question.upper()
+    if "MODEL" in q or "METRIC" in q or "ACCURACY" in q or "AUC" in q or "F1" in q:
+        return (
+            f"(Groq unavailable: {error})\n\n"
+            f"Model metrics: {tool_fns.tool_model_metrics()}\n"
+            "Set GROQ_API_KEY for full chat reasoning."
+        )
+
     from flight_agent.config import load_project_config
 
     hubs = list(load_project_config()["hubs"])
@@ -131,19 +139,16 @@ def _fallback_answer(question: str, error: str) -> str:
     dest = found[1] if len(found) > 1 else ("JFK" if origin != "JFK" else "DFW")
     carrier = next((c for c in ["DL", "AA", "UA", "B6", "WN", "AS"] if c in q), "DL")
 
-    stats = tool_fns.tool_route_stats(origin, dest, carrier)
-    pred = tool_fns.tool_predict_delay(
-        op_unique_carrier=carrier,
-        origin=origin,
-        dest=dest,
-        fl_month=6,
-        fl_dow=1,
-        crs_dep_hour=8,
-    )
-    return (
-        f"(Groq unavailable: {error})\n\n"
-        f"Fallback tool summary for {carrier} {origin}→{dest}:\n"
-        f"- route_stats: {stats}\n"
-        f"- predict_delay: {pred}\n"
-        "Set GROQ_API_KEY in .env (https://console.groq.com/keys) for full chat reasoning."
-    )
+    parts = [f"(Groq unavailable: {error})\n", f"Fallback for {carrier} {origin}→{dest}:"]
+    try:
+        parts.append(f"- route_stats: {tool_fns.tool_route_stats(origin, dest, carrier)}")
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"- route_stats error: {exc}")
+    try:
+        parts.append(
+            f"- predict_delay: {tool_fns.tool_predict_delay(op_unique_carrier=carrier, origin=origin, dest=dest, fl_month=6, fl_dow=1, crs_dep_hour=8)}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"- predict_delay error: {exc}")
+    parts.append("Set GROQ_API_KEY in .env for full chat reasoning.")
+    return "\n".join(parts)
