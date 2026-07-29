@@ -354,6 +354,34 @@ app.add_typer(warehouse_app, name="warehouse")
 model_app = typer.Typer(help="Trained model artifacts on R2 (for Streamlit Cloud)")
 app.add_typer(model_app, name="model")
 
+serve_cache_app = typer.Typer(help="Small local agg-mart cache for fast UI/API tools")
+app.add_typer(serve_cache_app, name="serve-cache")
+
+
+@serve_cache_app.command("sync")
+def serve_cache_sync_cmd(
+    force: bool = typer.Option(False, "--force", help="Re-download even if cache exists."),
+) -> None:
+    """Download curated route/airport/carrier Parquet from R2 into data/serve_cache."""
+    from flight_agent.ingest.serve_cache import serve_cache_dir, sync_serve_cache
+    from flight_agent.ingest.warehouse import reset_serve_connection
+
+    paths = sync_serve_cache(force=force)
+    reset_serve_connection()
+    typer.echo(f"Serve cache at {serve_cache_dir()} ({len(paths)} files)")
+
+
+@serve_cache_app.command("status")
+def serve_cache_status_cmd() -> None:
+    """Show whether the local serve cache is ready."""
+    from flight_agent.ingest.serve_cache import serve_cache_dir, serve_cache_paths, serve_cache_ready
+
+    typer.echo(f"dir={serve_cache_dir()}")
+    typer.echo(f"ready={serve_cache_ready()}")
+    for name, path in serve_cache_paths().items():
+        size = path.stat().st_size if path.exists() else 0
+        typer.echo(f"  {name}: exists={path.exists()} bytes={size}")
+
 
 @model_app.command("push")
 def model_push_cmd() -> None:

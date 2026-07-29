@@ -142,7 +142,12 @@ On startup the app downloads `models/model.joblib` (and meta/metrics) from R2 wh
 uv run flight model push   # after train
 uv run flight model pull   # download into models/local
 uv run flight train --publish-r2   # train and upload (default when R2 is configured)
+uv run flight serve-cache sync     # download small agg marts for fast UI tools
 ```
+
+Chat tools use `data/serve_cache/` (or `/tmp/flight_serve_cache` on Streamlit Cloud)
+instead of querying multi‑GB R2 Parquet on every question. Streamlit is pinned to
+`<1.60` to avoid blank-page issues during long runs.
 
 ## API
 

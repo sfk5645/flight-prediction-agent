@@ -361,6 +361,15 @@ def get_route_stats(
 ) -> dict[str, Any]:
     origin_u, dest_u = origin.upper(), dest.upper()
     carrier_u = carrier.upper() if carrier else None
+    return _get_route_stats_cached(origin_u, dest_u, carrier_u)
+
+
+@lru_cache(maxsize=512)
+def _get_route_stats_cached(
+    origin_u: str,
+    dest_u: str,
+    carrier_u: str | None,
+) -> dict[str, Any]:
     if not warehouse_available():
         return {
             "origin": origin_u,
@@ -377,7 +386,11 @@ def get_route_stats(
 
 def get_airport_congestion(airport: str, hour: int) -> dict[str, Any]:
     """Historical congestion profile for an airport at a clock hour."""
-    airport = airport.upper()
+    return _get_airport_congestion_cached(airport.upper(), int(hour))
+
+
+@lru_cache(maxsize=512)
+def _get_airport_congestion_cached(airport: str, hour: int) -> dict[str, Any]:
     if not warehouse_available():
         return {"airport": airport, "hour": hour, "note": "Warehouse not built."}
     with warehouse_connection(read_only=True, light=True) as con:
@@ -385,7 +398,11 @@ def get_airport_congestion(airport: str, hour: int) -> dict[str, Any]:
 
 
 def get_carrier_stats(carrier: str) -> dict[str, Any]:
-    carrier = carrier.upper()
+    return _get_carrier_stats_cached(carrier.upper())
+
+
+@lru_cache(maxsize=128)
+def _get_carrier_stats_cached(carrier: str) -> dict[str, Any]:
     if not warehouse_available():
         return {"op_unique_carrier": carrier, "note": "Warehouse not built."}
     with warehouse_connection(read_only=True, light=True) as con:

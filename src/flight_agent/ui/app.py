@@ -21,20 +21,27 @@ from flight_agent.agent.graph import ask_agent  # noqa: E402
 from flight_agent.serve import services  # noqa: E402
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="Preparing model + local lake cache…")
 def _warm_runtime() -> str:
-    """Load model + open light R2 warehouse once per server process."""
+    """Load model + sync small serve marts once per server process."""
     try:
         services.load_model()
     except Exception as exc:  # noqa: BLE001
         return f"model:{exc}"
     try:
-        from flight_agent.ingest.warehouse import warehouse_available, warehouse_connection
+        from flight_agent.ingest.serve_cache import ensure_serve_cache, serve_cache_dir
+        from flight_agent.ingest.warehouse import (
+            reset_serve_connection,
+            warehouse_available,
+            warehouse_connection,
+        )
 
+        ensure_serve_cache()
+        reset_serve_connection()
         if warehouse_available():
             with warehouse_connection(read_only=True, light=True) as con:
                 con.execute("select 1").fetchone()
-        return "ok"
+        return f"ok:{serve_cache_dir()}"
     except Exception as exc:  # noqa: BLE001
         return f"warehouse:{exc}"
 
@@ -44,12 +51,12 @@ warm_status = _warm_runtime()
 st.title("Flight Delay Ops Agent")
 st.caption(
     "Ask about delay risk on LAX / JFK / ORD / DEN / ATL / IAD / DFW routes. "
-    "Answers use the trained model + curated lake tools (R2) via Groq."
+    "Answers use the trained model + local serve-cache marts + Groq."
 )
 
 with st.sidebar:
     st.header("Model status")
-    if warm_status == "ok" or warm_status.startswith("warehouse:"):
+    if warm_status.startswith("ok") or warm_status.startswith("warehouse:"):
         try:
             services.load_model()
             st.success("Model loaded")
@@ -57,6 +64,8 @@ with st.sidebar:
             st.error(str(exc))
     else:
         st.error(warm_status)
+    if warm_status.startswith("ok:"):
+        st.caption(f"Serve cache: `{warm_status.split('ok:', 1)[1]}`")
     metrics = services.load_metrics()
     if metrics.get("overall"):
         o = metrics["overall"]
@@ -76,31 +85,29 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 1) Paint history first so the page never goes blank while waiting.
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 prompt = st.chat_input("Ask about a flight delay…")
 
-# 2) On submit: store user turn and rerun so the message is visible before work starts.
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.session_state.awaiting_reply = True
     st.rerun()
 
-# 3) Answer exactly once after the user message is on screen.
 if st.session_state.get("awaiting_reply"):
     st.session_state.awaiting_reply = False
     question = st.session_state.messages[-1]["content"]
     with st.chat_message("assistant"):
-        with st.spinner("Consulting model + lake tools…"):
-            try:
-                answer = ask_agent(question)
-            except Exception as exc:  # noqa: BLE001
-                answer = (
-                    "Sorry — something went wrong. The page stayed up so you can retry.\n\n"
-                    f"`{type(exc).__name__}: {exc}`"
-                )
-        st.markdown(answer)
+        placeholder = st.empty()
+        placeholder.info("Consulting model + lake tools…")
+        try:
+            answer = ask_agent(question)
+        except Exception as exc:  # noqa: BLE001
+            answer = (
+                "Sorry — something went wrong. The page stayed up so you can retry.\n\n"
+                f"`{type(exc).__name__}: {exc}`"
+            )
+        placeholder.markdown(answer)
     st.session_state.messages.append({"role": "assistant", "content": answer})

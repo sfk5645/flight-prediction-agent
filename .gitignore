@@ -38,6 +38,7 @@ service-account*.json
 data/raw/
 data/curated/
 data/duckdb/
+data/serve_cache/
 *.duckdb
 *.duckdb.wal
 mlruns/

@@ -79,6 +79,8 @@ def build_agent():
         model=settings.groq_model,
         api_key=settings.groq_api_key,
         temperature=0.1,
+        timeout=45,
+        max_retries=1,
     ).bind_tools(tools)
 
     def chatbot(state: AgentState):
@@ -110,7 +112,7 @@ def ask_agent(question: str) -> str:
                     HumanMessage(content=question),
                 ]
             },
-            config={"recursion_limit": 12},
+            config={"recursion_limit": 6},
         )
         messages = result["messages"]
         for msg in reversed(messages):
