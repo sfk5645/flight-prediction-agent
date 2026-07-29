@@ -103,8 +103,10 @@ def build_agent():
 
 def ask_agent(question: str) -> str:
     """One-shot Q&A. Falls back to a deterministic tool summary if Groq is unavailable."""
+    print(f"ask_agent: start ({question[:80]!r})", flush=True)
     try:
         agent = build_agent()
+        print("ask_agent: invoking Groq graph…", flush=True)
         result = agent.invoke(
             {
                 "messages": [
@@ -117,9 +119,12 @@ def ask_agent(question: str) -> str:
         messages = result["messages"]
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
+                print("ask_agent: done (groq)", flush=True)
                 return str(msg.content)
+        print("ask_agent: done (last message)", flush=True)
         return str(messages[-1].content)
     except Exception as exc:  # noqa: BLE001
+        print(f"ask_agent: fallback ({exc})", flush=True)
         return _fallback_answer(question, error=str(exc))
 
 

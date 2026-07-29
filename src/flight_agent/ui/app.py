@@ -21,6 +21,13 @@ from flight_agent.agent.graph import ask_agent  # noqa: E402
 from flight_agent.serve import services  # noqa: E402
 
 
+def _messages() -> list:
+    """Always return a real list in session_state (never use missing attrs)."""
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
+    return st.session_state["messages"]
+
+
 @st.cache_resource(show_spinner="Preparing model + local lake cache…")
 def _warm_runtime() -> str:
     """Load model + sync small serve marts once per server process."""
@@ -82,32 +89,40 @@ with st.sidebar:
 """
     )
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+msgs = _messages()
+if "pending_question" not in st.session_state:
+    st.session_state["pending_question"] = None
 
-for msg in st.session_state.messages:
+# Paint history first.
+for msg in msgs:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 prompt = st.chat_input("Ask about a flight delay…")
 
+# Submit → store user turn + pending flag → rerun so the user bubble is on screen.
 if prompt:
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    st.session_state.awaiting_reply = True
+    msgs.append({"role": "user", "content": prompt})
+    st.session_state["pending_question"] = prompt
     st.rerun()
 
-if st.session_state.get("awaiting_reply"):
-    st.session_state.awaiting_reply = False
-    question = st.session_state.messages[-1]["content"]
+# Answer only while a pending question exists; clear it AFTER we finish.
+pending = st.session_state.get("pending_question")
+if pending:
     with st.chat_message("assistant"):
-        placeholder = st.empty()
-        placeholder.info("Consulting model + lake tools…")
+        box = st.empty()
+        box.info("Consulting model + lake tools…")
         try:
-            answer = ask_agent(question)
+            answer = ask_agent(pending)
         except Exception as exc:  # noqa: BLE001
             answer = (
-                "Sorry — something went wrong. The page stayed up so you can retry.\n\n"
+                "Sorry — something went wrong. You can retry the question.\n\n"
                 f"`{type(exc).__name__}: {exc}`"
             )
-        placeholder.markdown(answer)
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+        box.markdown(answer)
+
+    # Re-bind messages after the long call (session can be flaky across waits).
+    history = _messages()
+    history.append({"role": "assistant", "content": answer})
+    st.session_state["messages"] = history
+    st.session_state["pending_question"] = None
