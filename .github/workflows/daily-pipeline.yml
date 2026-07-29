@@ -1,7 +1,7 @@
 name: Daily pipeline
 
-# Light sample smoke on a schedule. Full R2 lake + train lives in weekly-lake-update.yml.
-# Use workflow_dispatch for a live incremental run or optional retrain.
+# Daily: light weather refresh + dbt tests when raw data exists.
+# Full BTS months update infrequently — use workflow_dispatch or weekly job for heavy ingest.
 
 on:
   schedule:
@@ -16,15 +16,11 @@ on:
         description: "Retrain model after dbt"
         type: boolean
         default: false
-      publish_r2:
-        description: "Push trained model to R2 (needs R2_* secrets)"
-        type: boolean
-        default: false
 
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -43,19 +39,13 @@ jobs:
         env:
           FLIGHT_DATA_DIR: ${{ github.workspace }}/data
           FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.use_sample }}" = "false" ]; then
-            if [ -n "${R2_ACCESS_KEY_ID:-}" ]; then
-              uv run flight ingest all --to-r2 --no-keep-local --incremental --no-retrain
-            else
-              uv run flight ingest all --incremental --no-retrain
-            fi
+            # Live rolling incremental (local Actions runner lake)
+            uv run flight ingest all --incremental
           else
+            # Scheduled / default: short fixed sample window (configs date_range fixed bounds)
+            # Skip auto-retrain — CI smoke uses the separate demo/train job when needed
             uv run flight ingest all --sample --fixed --full --no-retrain
           fi
 
@@ -63,18 +53,7 @@ jobs:
         env:
           FLIGHT_DATA_DIR: ${{ github.workspace }}/data
           FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
-          FLIGHT_DUCKDB_KEEP_LOCAL: "true"
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.use_sample }}" = "false" ] && [ -n "${R2_ACCESS_KEY_ID:-}" ]; then
-            uv run flight dbt build --from-r2
-          else
-            uv run flight dbt build
-          fi
+        run: uv run flight dbt build
 
       - name: Train (optional)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_train }}
@@ -83,23 +62,11 @@ jobs:
           FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
           FLIGHT_MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
           FLIGHT_MODEL_DIR: ${{ github.workspace }}/models/local
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-        run: |
-          if [ "${{ inputs.publish_r2 }}" = "true" ]; then
-            uv run flight train --sample-limit 20000 --publish-r2
-          else
-            uv run flight train --sample-limit 20000 --no-publish-r2
-          fi
+        run: uv run flight train --sample-limit 20000
 
-      - name: Upload model artifact
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_train }}
+      - name: Upload curated duckdb artifact
         uses: actions/upload-artifact@v4
         with:
-          name: model-local
-          path: models/local/
+          name: duckdb-warehouse
+          path: data/duckdb/
           if-no-files-found: ignore
-          retention-days: 7

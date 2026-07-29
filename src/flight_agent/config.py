@@ -49,11 +49,10 @@ class Settings(BaseSettings):
     hf_repo_id: str = Field(default="", validation_alias="HF_REPO_ID")
     hf_dataset_repo_id: str = Field(default="", validation_alias="HF_DATASET_REPO_ID")
 
-    # Groq LLM for the LangGraph ops agent (free tier: llama-3.1-8b-instant)
-    groq_api_key: str = Field(default="", validation_alias="GROQ_API_KEY")
-    groq_model: str = Field(
-        default="llama-3.1-8b-instant", validation_alias="GROQ_MODEL"
+    ollama_base_url: str = Field(
+        default="http://localhost:11434", validation_alias="OLLAMA_BASE_URL"
     )
+    ollama_model: str = Field(default="llama3.2:3b", validation_alias="OLLAMA_MODEL")
 
     api_host: str = Field(default="127.0.0.1", validation_alias="FLIGHT_API_HOST")
     api_port: int = Field(default=8000, validation_alias="FLIGHT_API_PORT")
@@ -81,9 +80,6 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    from flight_agent.runtime_secrets import apply_runtime_secrets
-
-    apply_runtime_secrets()
     return Settings()
 
 

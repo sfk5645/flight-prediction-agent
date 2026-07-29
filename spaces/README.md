@@ -1,17 +1,20 @@
-# Flight Delay Ops Agent — optional Hugging Face Space
+# Flight Delay Ops Agent — Hugging Face Space
 
-Primary free UI host is **Streamlit Community Cloud** (`streamlit_app.py` +
-`requirements.txt` at the repo root). This folder is an alternate entrypoint.
+Streamlit UI for the flight delay prediction agent.
 
-## Streamlit Community Cloud (recommended)
+## Setup
 
-1. Deploy the GitHub repo at [share.streamlit.io](https://share.streamlit.io).
-2. Main file: `streamlit_app.py`
-3. Secrets: `GROQ_API_KEY`, `R2_*` (see `.streamlit/secrets.toml.example`).
-4. Ensure GitHub Actions (or `flight model push`) has uploaded `models/model.joblib` to R2.
+1. Duplicate this Space or connect the GitHub repo.
+2. In Space settings, set secrets if needed (`OLLAMA` is typically local-only;
+   on Spaces the UI uses the **fallback tool summary** unless you wire a free
+   cloud LLM).
+3. Pre-build artifacts: run `flight demo` in CI and commit `models/local/` for
+   demos, or download `model.joblib` from your HF model repo at startup.
 
-## Hugging Face Space
+## Local
 
-1. Create a Space with SDK=streamlit; app file `spaces/app.py` or point at `streamlit_app.py`.
-2. Add the same secrets as above.
-3. Without `GROQ_API_KEY`, the UI uses the deterministic tool summary fallback.
+```bash
+uv sync
+uv run flight demo
+uv run flight ui
+```

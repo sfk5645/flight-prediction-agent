@@ -17,14 +17,11 @@ from flight_agent.ingest.warehouse import warehouse_available, warehouse_connect
 
 @lru_cache
 def load_model():
-    from flight_agent.train.r2_model import ensure_model_artifacts
-
     settings = get_settings()
-    ensure_model_artifacts()
     path = Path(settings.model_dir) / "model.joblib"
     if not path.exists():
         raise FileNotFoundError(
-            f"Model not found at {path}. Run `flight train` or `flight model pull`."
+            f"Model not found at {path}. Run `flight train` first."
         )
     return joblib.load(path)
 
@@ -54,21 +51,12 @@ def _enrich_from_lake(
     crs_dep_hour: int,
     fl_dow: int,
 ) -> dict[str, Any]:
-    """Fill congestion / reliability defaults (one light warehouse session)."""
+    """Fill congestion / reliability defaults from warehouse lookups."""
     features = dict(DEFAULTS)
     features["is_weekend"] = 1 if fl_dow in (0, 6) else 0
     features["is_peak_hour"] = 1 if crs_dep_hour in range(6, 10) or crs_dep_hour in range(16, 21) else 0
 
-    if not warehouse_available():
-        return features
-
-    origin_u, dest_u, carrier_u = origin.upper(), dest.upper(), op_unique_carrier.upper()
-    with warehouse_connection(read_only=True, light=True) as con:
-        route = _query_route_stats(con, origin_u, dest_u, carrier_u)
-        origin_c = _query_airport_congestion(con, origin_u, crs_dep_hour)
-        dest_c = _query_airport_congestion(con, dest_u, crs_dep_hour)
-        carrier = _query_carrier_stats(con, carrier_u)
-
+    route = get_route_stats(origin, dest, op_unique_carrier)
     if route.get("pct_delay_15") is not None:
         features["route_hist_pct_delay_15"] = float(route["pct_delay_15"])
     if route.get("avg_distance") is not None:
@@ -76,6 +64,7 @@ def _enrich_from_lake(
     if route.get("avg_crs_elapsed_time") is not None:
         features["crs_elapsed_time"] = float(route["avg_crs_elapsed_time"])
 
+    origin_c = get_airport_congestion(origin, crs_dep_hour)
     if origin_c.get("avg_taxi_out") is not None:
         features["origin_hist_avg_taxi_out"] = float(origin_c["avg_taxi_out"])
     if origin_c.get("avg_nas_delay") is not None:
@@ -90,22 +79,21 @@ def _enrich_from_lake(
         )
     if origin_c.get("n_operations") is not None:
         features["origin_hist_hour_ops"] = float(origin_c["n_operations"])
-        features["origin_hour_sched_flights"] = float(
-            origin_c.get("n_departures") or origin_c["n_operations"]
-        )
+        features["origin_hour_sched_flights"] = float(origin_c.get("n_departures") or origin_c["n_operations"])
     if origin_c.get("pct_delay_15") is not None:
         features["origin_hist_hour_pct_delay_15"] = float(origin_c["pct_delay_15"])
 
+    # Dest: use same clock hour as a proxy when arrival hour unknown
+    dest_c = get_airport_congestion(dest, crs_dep_hour)
     if dest_c.get("avg_taxi_in") is not None:
         features["dest_hist_avg_taxi_in"] = float(dest_c["avg_taxi_in"])
     if dest_c.get("n_operations") is not None:
         features["dest_hist_hour_ops"] = float(dest_c["n_operations"])
-        features["dest_hour_sched_flights"] = float(
-            dest_c.get("n_arrivals") or dest_c["n_operations"]
-        )
+        features["dest_hour_sched_flights"] = float(dest_c.get("n_arrivals") or dest_c["n_operations"])
     if dest_c.get("pct_delay_15") is not None:
         features["dest_hist_hour_pct_delay_15"] = float(dest_c["pct_delay_15"])
 
+    carrier = get_carrier_stats(op_unique_carrier)
     if carrier.get("pct_delay_15") is not None:
         features["carrier_hist_pct_delay_15"] = float(carrier["pct_delay_15"])
     if carrier.get("avg_taxi_out") is not None:
@@ -137,7 +125,6 @@ def predict_delay(
     dest_wind_kmh: float | None = None,
     dest_weathercode: int | None = None,
     route_hist_pct_delay_15: float | None = None,
-    fetch_weather: bool = False,
 ) -> dict[str, Any]:
     enriched = _enrich_from_lake(
         op_unique_carrier=op_unique_carrier,
@@ -164,28 +151,27 @@ def predict_delay(
         if v is not None:
             enriched[k] = v
 
-    # Optional live weather from R2 (slow). Agent should call the weather tool instead.
-    if fetch_weather:
-        if origin_temp_c is None:
-            wx = get_weather(origin)
-            if wx.get("temperature_2m_mean") is not None:
-                enriched["origin_temp_c"] = float(wx["temperature_2m_mean"])
-            if wx.get("precipitation_sum") is not None:
-                enriched["origin_precip_mm"] = float(wx["precipitation_sum"])
-            if wx.get("windspeed_10m_max") is not None:
-                enriched["origin_wind_kmh"] = float(wx["windspeed_10m_max"])
-            if wx.get("weathercode") is not None:
-                enriched["origin_weathercode"] = int(wx["weathercode"])
-        if dest_temp_c is None:
-            wxd = get_weather(dest)
-            if wxd.get("temperature_2m_mean") is not None:
-                enriched["dest_temp_c"] = float(wxd["temperature_2m_mean"])
-            if wxd.get("precipitation_sum") is not None:
-                enriched["dest_precip_mm"] = float(wxd["precipitation_sum"])
-            if wxd.get("windspeed_10m_max") is not None:
-                enriched["dest_wind_kmh"] = float(wxd["windspeed_10m_max"])
-            if wxd.get("weathercode") is not None:
-                enriched["dest_weathercode"] = int(wxd["weathercode"])
+    # Pull weather from lake when not provided
+    if origin_temp_c is None:
+        wx = get_weather(origin)
+        if wx.get("temperature_2m_mean") is not None:
+            enriched["origin_temp_c"] = float(wx["temperature_2m_mean"])
+        if wx.get("precipitation_sum") is not None:
+            enriched["origin_precip_mm"] = float(wx["precipitation_sum"])
+        if wx.get("windspeed_10m_max") is not None:
+            enriched["origin_wind_kmh"] = float(wx["windspeed_10m_max"])
+        if wx.get("weathercode") is not None:
+            enriched["origin_weathercode"] = int(wx["weathercode"])
+    if dest_temp_c is None:
+        wxd = get_weather(dest)
+        if wxd.get("temperature_2m_mean") is not None:
+            enriched["dest_temp_c"] = float(wxd["temperature_2m_mean"])
+        if wxd.get("precipitation_sum") is not None:
+            enriched["dest_precip_mm"] = float(wxd["precipitation_sum"])
+        if wxd.get("windspeed_10m_max") is not None:
+            enriched["dest_wind_kmh"] = float(wxd["windspeed_10m_max"])
+        if wxd.get("weathercode") is not None:
+            enriched["dest_weathercode"] = int(wxd["weathercode"])
 
     row = pd.DataFrame(
         [
@@ -277,44 +263,55 @@ def _row_to_dict(row: pd.DataFrame) -> dict[str, Any]:
     return rec
 
 
-def _query_route_stats(
-    con: Any,
+def get_route_stats(
     origin: str,
     dest: str,
-    carrier: str | None,
+    carrier: str | None = None,
 ) -> dict[str, Any]:
-    if carrier:
-        row = con.execute(
-            """
-            select *
-            from flt_route_delay_stats
-            where origin = ? and dest = ? and op_unique_carrier = ?
-            """,
-            [origin, dest, carrier],
-        ).fetchdf()
-    else:
-        row = con.execute(
-            """
-            select origin, dest,
-                   sum(n_flights) as n_flights,
-                   sum(avg_arr_delay * n_flights) / nullif(sum(n_flights), 0) as avg_arr_delay,
-                   sum(pct_delay_15 * n_flights) / nullif(sum(n_flights), 0) as pct_delay_15,
-                   sum(avg_distance * n_flights) / nullif(sum(n_flights), 0) as avg_distance,
-                   sum(avg_taxi_out * n_flights) / nullif(sum(n_flights), 0) as avg_taxi_out,
-                   sum(avg_taxi_in * n_flights) / nullif(sum(n_flights), 0) as avg_taxi_in,
-                   sum(avg_nas_delay * n_flights) / nullif(sum(n_flights), 0) as avg_nas_delay,
-                   sum(avg_crs_elapsed_time * n_flights) / nullif(sum(n_flights), 0) as avg_crs_elapsed_time
-            from flt_route_delay_stats
-            where origin = ? and dest = ?
-            group by 1, 2
-            """,
-            [origin, dest],
-        ).fetchdf()
+    if not warehouse_available():
+        return {
+            "origin": origin.upper(),
+            "dest": dest.upper(),
+            "op_unique_carrier": carrier,
+            "n_flights": 0,
+            "avg_arr_delay": None,
+            "pct_delay_15": None,
+            "note": "Warehouse not built; run `flight dbt build --from-r2` then `flight warehouse push`.",
+        }
+    with warehouse_connection(read_only=True) as con:
+        if carrier:
+            row = con.execute(
+                """
+                select *
+                from flt_route_delay_stats
+                where origin = ? and dest = ? and op_unique_carrier = ?
+                """,
+                [origin.upper(), dest.upper(), carrier.upper()],
+            ).fetchdf()
+        else:
+            row = con.execute(
+                """
+                select origin, dest,
+                       sum(n_flights) as n_flights,
+                       sum(avg_arr_delay * n_flights) / nullif(sum(n_flights), 0) as avg_arr_delay,
+                       sum(pct_delay_15 * n_flights) / nullif(sum(n_flights), 0) as pct_delay_15,
+                       sum(avg_distance * n_flights) / nullif(sum(n_flights), 0) as avg_distance,
+                       sum(avg_taxi_out * n_flights) / nullif(sum(n_flights), 0) as avg_taxi_out,
+                       sum(avg_taxi_in * n_flights) / nullif(sum(n_flights), 0) as avg_taxi_in,
+                       sum(avg_nas_delay * n_flights) / nullif(sum(n_flights), 0) as avg_nas_delay,
+                       sum(avg_crs_elapsed_time * n_flights) / nullif(sum(n_flights), 0) as avg_crs_elapsed_time
+                from flt_route_delay_stats
+                where origin = ? and dest = ?
+                group by 1, 2
+                """,
+                [origin.upper(), dest.upper()],
+            ).fetchdf()
+
     if row.empty:
         return {
-            "origin": origin,
-            "dest": dest,
-            "op_unique_carrier": carrier,
+            "origin": origin.upper(),
+            "dest": dest.upper(),
+            "op_unique_carrier": carrier.upper() if carrier else None,
             "n_flights": 0,
             "avg_arr_delay": None,
             "pct_delay_15": None,
@@ -323,15 +320,20 @@ def _query_route_stats(
     return _row_to_dict(row)
 
 
-def _query_airport_congestion(con: Any, airport: str, hour: int) -> dict[str, Any]:
-    row = con.execute(
-        """
-        select *
-        from flt_airport_hour_stats
-        where airport = ? and hour = ?
-        """,
-        [airport, hour],
-    ).fetchdf()
+def get_airport_congestion(airport: str, hour: int) -> dict[str, Any]:
+    """Historical congestion profile for an airport at a clock hour."""
+    airport = airport.upper()
+    if not warehouse_available():
+        return {"airport": airport, "hour": hour, "note": "Warehouse not built."}
+    with warehouse_connection(read_only=True) as con:
+        row = con.execute(
+            """
+            select *
+            from flt_airport_hour_stats
+            where airport = ? and hour = ?
+            """,
+            [airport, hour],
+        ).fetchdf()
     if row.empty:
         return {
             "airport": airport,
@@ -341,154 +343,46 @@ def _query_airport_congestion(con: Any, airport: str, hour: int) -> dict[str, An
     return _row_to_dict(row)
 
 
-def _query_carrier_stats(con: Any, carrier: str) -> dict[str, Any]:
-    row = con.execute(
-        """
-        select * from flt_carrier_delay_stats
-        where op_unique_carrier = ?
-        """,
-        [carrier],
-    ).fetchdf()
+def get_carrier_stats(carrier: str) -> dict[str, Any]:
+    carrier = carrier.upper()
+    if not warehouse_available():
+        return {"op_unique_carrier": carrier, "note": "Warehouse not built."}
+    with warehouse_connection(read_only=True) as con:
+        row = con.execute(
+            """
+            select * from flt_carrier_delay_stats
+            where op_unique_carrier = ?
+            """,
+            [carrier],
+        ).fetchdf()
     if row.empty:
         return {"op_unique_carrier": carrier, "note": "No carrier stats."}
     return _row_to_dict(row)
 
 
-def get_route_stats(
-    origin: str,
-    dest: str,
-    carrier: str | None = None,
-) -> dict[str, Any]:
-    origin_u, dest_u = origin.upper(), dest.upper()
-    carrier_u = carrier.upper() if carrier else None
-    return _get_route_stats_cached(origin_u, dest_u, carrier_u)
-
-
-@lru_cache(maxsize=512)
-def _get_route_stats_cached(
-    origin_u: str,
-    dest_u: str,
-    carrier_u: str | None,
-) -> dict[str, Any]:
-    if not warehouse_available():
-        return {
-            "origin": origin_u,
-            "dest": dest_u,
-            "op_unique_carrier": carrier_u,
-            "n_flights": 0,
-            "avg_arr_delay": None,
-            "pct_delay_15": None,
-            "note": "Warehouse not built; run `flight dbt build --from-r2` then `flight warehouse push`.",
-        }
-    with warehouse_connection(read_only=True, light=True) as con:
-        return _query_route_stats(con, origin_u, dest_u, carrier_u)
-
-
-def get_airport_congestion(airport: str, hour: int) -> dict[str, Any]:
-    """Historical congestion profile for an airport at a clock hour."""
-    return _get_airport_congestion_cached(airport.upper(), int(hour))
-
-
-@lru_cache(maxsize=512)
-def _get_airport_congestion_cached(airport: str, hour: int) -> dict[str, Any]:
-    if not warehouse_available():
-        return {"airport": airport, "hour": hour, "note": "Warehouse not built."}
-    with warehouse_connection(read_only=True, light=True) as con:
-        return _query_airport_congestion(con, airport, hour)
-
-
-def get_carrier_stats(carrier: str) -> dict[str, Any]:
-    return _get_carrier_stats_cached(carrier.upper())
-
-
-@lru_cache(maxsize=128)
-def _get_carrier_stats_cached(carrier: str) -> dict[str, Any]:
-    if not warehouse_available():
-        return {"op_unique_carrier": carrier, "note": "Warehouse not built."}
-    with warehouse_connection(read_only=True, light=True) as con:
-        return _query_carrier_stats(con, carrier)
-
-
 def get_weather(airport: str, date: str | None = None) -> dict[str, Any]:
-    """Weather for one airport — reads a single R2 object (not the full hive)."""
-    from flight_agent.ingest.warehouse import configure_r2
-
     airport = airport.upper()
-    settings = get_settings()
-    db = Path(settings.duckdb_path)
-
-    # Local DuckDB may have stg_weather from dbt.
-    if db.exists():
-        with warehouse_connection(read_only=True, light=True) as con:
-            try:
-                if date:
-                    df = con.execute(
-                        """
-                        select * from stg_weather
-                        where airport = ? and weather_date = cast(? as date)
-                        """,
-                        [airport, date],
-                    ).fetchdf()
-                else:
-                    df = con.execute(
-                        """
-                        select * from stg_weather
-                        where airport = ?
-                        order by weather_date desc
-                        limit 1
-                        """,
-                        [airport],
-                    ).fetchdf()
-            except Exception:  # noqa: BLE001
-                df = pd.DataFrame()
-        if not df.empty:
-            return _row_to_dict(df)
-
-    if not settings.r2_configured:
-        return {"airport": airport, "note": "R2 not configured; no weather."}
-
-    import duckdb
-
-    uri = f"s3://{settings.r2_bucket}/raw/weather/airport={airport}/weather.parquet"
-    con = duckdb.connect(":memory:")
-    try:
-        configure_r2(con)
+    if not warehouse_available():
+        return {"airport": airport, "note": "Warehouse not built."}
+    with warehouse_connection(read_only=True) as con:
         if date:
             df = con.execute(
-                f"""
-                select
-                  cast(date as date) as weather_date,
-                  upper(cast(airport as varchar)) as airport,
-                  cast(temperature_2m_mean as double) as temperature_2m_mean,
-                  cast(precipitation_sum as double) as precipitation_sum,
-                  cast(windspeed_10m_max as double) as windspeed_10m_max,
-                  cast(weathercode as integer) as weathercode
-                from read_parquet('{uri}')
-                where cast(date as date) = cast(? as date)
-                limit 1
+                """
+                select * from stg_weather
+                where airport = ? and weather_date = cast(? as date)
                 """,
-                [date],
+                [airport, date],
             ).fetchdf()
         else:
             df = con.execute(
-                f"""
-                select
-                  cast(date as date) as weather_date,
-                  upper(cast(airport as varchar)) as airport,
-                  cast(temperature_2m_mean as double) as temperature_2m_mean,
-                  cast(precipitation_sum as double) as precipitation_sum,
-                  cast(windspeed_10m_max as double) as windspeed_10m_max,
-                  cast(weathercode as integer) as weathercode
-                from read_parquet('{uri}')
-                order by date desc
-                limit 1
                 """
+                select * from stg_weather
+                where airport = ?
+                order by weather_date desc
+                limit 1
+                """,
+                [airport],
             ).fetchdf()
-    except Exception as exc:  # noqa: BLE001
-        return {"airport": airport, "date": date, "note": f"No weather: {exc}"}
-    finally:
-        con.close()
-
     if df.empty:
         return {"airport": airport, "date": date, "note": "No weather rows found."}
     return _row_to_dict(df)

@@ -351,57 +351,6 @@ def run_dbt(
 warehouse_app = typer.Typer(help="DuckDB / curated warehouse on R2")
 app.add_typer(warehouse_app, name="warehouse")
 
-model_app = typer.Typer(help="Trained model artifacts on R2 (for Streamlit Cloud)")
-app.add_typer(model_app, name="model")
-
-serve_cache_app = typer.Typer(help="Small local agg-mart cache for fast UI/API tools")
-app.add_typer(serve_cache_app, name="serve-cache")
-
-
-@serve_cache_app.command("sync")
-def serve_cache_sync_cmd(
-    force: bool = typer.Option(False, "--force", help="Re-download even if cache exists."),
-) -> None:
-    """Download curated route/airport/carrier Parquet from R2 into data/serve_cache."""
-    from flight_agent.ingest.serve_cache import serve_cache_dir, sync_serve_cache
-    from flight_agent.ingest.warehouse import reset_serve_connection
-
-    paths = sync_serve_cache(force=force)
-    reset_serve_connection()
-    typer.echo(f"Serve cache at {serve_cache_dir()} ({len(paths)} files)")
-
-
-@serve_cache_app.command("status")
-def serve_cache_status_cmd() -> None:
-    """Show whether the local serve cache is ready."""
-    from flight_agent.ingest.serve_cache import serve_cache_dir, serve_cache_paths, serve_cache_ready
-
-    typer.echo(f"dir={serve_cache_dir()}")
-    typer.echo(f"ready={serve_cache_ready()}")
-    for name, path in serve_cache_paths().items():
-        size = path.stat().st_size if path.exists() else 0
-        typer.echo(f"  {name}: exists={path.exists()} bytes={size}")
-
-
-@model_app.command("push")
-def model_push_cmd() -> None:
-    """Upload models/local artifacts to R2 under models/."""
-    from flight_agent.train.r2_model import push_model_to_r2
-
-    uploaded = push_model_to_r2()
-    typer.echo(f"Pushed {len(uploaded)} object(s) to R2")
-
-
-@model_app.command("pull")
-def model_pull_cmd(
-    force: bool = typer.Option(False, "--force", help="Re-download even if local model exists."),
-) -> None:
-    """Download model artifacts from R2 into models/local."""
-    from flight_agent.train.r2_model import pull_model_from_r2
-
-    path = pull_model_from_r2(force=force)
-    typer.echo(f"Model ready at {path}")
-
 
 @warehouse_app.command("push")
 def warehouse_push_cmd(
@@ -443,11 +392,6 @@ def train_cmd(
         "Use 0 to attempt the full lake (may OOM).",
     ),
     publish_hf: bool = typer.Option(False, "--publish-hf", help="Push model to Hugging Face Hub."),
-    publish_r2: Optional[bool] = typer.Option(
-        None,
-        "--publish-r2/--no-publish-r2",
-        help="Push model to R2 (default: on when R2_* is configured).",
-    ),
 ) -> None:
     """Train delay classifier and log to MLflow."""
     from flight_agent.ingest.schedule import resolve_ingest_window
@@ -455,9 +399,7 @@ def train_cmd(
     from flight_agent.train.train import train_model
 
     ensure_dirs()
-    metrics = train_model(
-        sample_limit=sample_limit, publish_hf=publish_hf, publish_r2=publish_r2
-    )
+    metrics = train_model(sample_limit=sample_limit, publish_hf=publish_hf)
     window = resolve_ingest_window()
     mark_trained(window, reason="manual_train")
     typer.echo(f"Training complete: {metrics}")
@@ -481,10 +423,7 @@ def serve_cmd(
 @app.command("ui")
 def ui_cmd(port: int = typer.Option(8501, help="Streamlit port")) -> None:
     """Launch Streamlit chat UI."""
-    # Prefer repo-root entrypoint (same file Streamlit Community Cloud uses).
-    ui_path = ROOT / "streamlit_app.py"
-    if not ui_path.exists():
-        ui_path = ROOT / "src" / "flight_agent" / "ui" / "app.py"
+    ui_path = ROOT / "src" / "flight_agent" / "ui" / "app.py"
     result = subprocess.run(
         [sys.executable, "-m", "streamlit", "run", str(ui_path), "--server.port", str(port)],
     )
@@ -493,7 +432,7 @@ def ui_cmd(port: int = typer.Option(8501, help="Streamlit port")) -> None:
 
 @app.command("agent")
 def agent_cmd(question: str = typer.Argument(..., help="Question for the ops agent")) -> None:
-    """Ask the LangGraph + Groq agent a one-shot question."""
+    """Ask the LangGraph + Ollama agent a one-shot question."""
     from flight_agent.agent.graph import ask_agent
 
     answer = ask_agent(question)

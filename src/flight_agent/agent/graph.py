@@ -1,4 +1,4 @@
-"""LangGraph + Groq ops agent for flight delay questions."""
+"""LangGraph + Ollama ops agent for flight delay questions."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Annotated, Sequence, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool
-from langchain_groq import ChatGroq
+from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -70,17 +70,11 @@ def _build_tools() -> list[StructuredTool]:
 
 def build_agent():
     settings = get_settings()
-    if not settings.groq_api_key:
-        raise RuntimeError(
-            "GROQ_API_KEY is not set. Add it to .env (https://console.groq.com/keys)."
-        )
     tools = _build_tools()
-    llm = ChatGroq(
-        model=settings.groq_model,
-        api_key=settings.groq_api_key,
+    llm = ChatOllama(
+        model=settings.ollama_model,
+        base_url=settings.ollama_base_url,
         temperature=0.1,
-        timeout=45,
-        max_retries=1,
     ).bind_tools(tools)
 
     def chatbot(state: AgentState):
@@ -102,42 +96,29 @@ def build_agent():
 
 
 def ask_agent(question: str) -> str:
-    """One-shot Q&A. Falls back to a deterministic tool summary if Groq is unavailable."""
-    print(f"ask_agent: start ({question[:80]!r})", flush=True)
+    """One-shot Q&A. Falls back to a deterministic tool summary if Ollama is down."""
     try:
         agent = build_agent()
-        print("ask_agent: invoking Groq graph…", flush=True)
         result = agent.invoke(
             {
                 "messages": [
                     SystemMessage(content=SYSTEM_PROMPT),
                     HumanMessage(content=question),
                 ]
-            },
-            config={"recursion_limit": 6},
+            }
         )
         messages = result["messages"]
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-                print("ask_agent: done (groq)", flush=True)
                 return str(msg.content)
-        print("ask_agent: done (last message)", flush=True)
         return str(messages[-1].content)
     except Exception as exc:  # noqa: BLE001
-        print(f"ask_agent: fallback ({exc})", flush=True)
         return _fallback_answer(question, error=str(exc))
 
 
 def _fallback_answer(question: str, error: str) -> str:
-    """Heuristic fallback so demos work without Groq (keep lake calls light)."""
+    """Heuristic fallback so demos work without Ollama."""
     q = question.upper()
-    if "MODEL" in q or "METRIC" in q or "ACCURACY" in q or "AUC" in q or "F1" in q:
-        return (
-            f"(Groq unavailable: {error})\n\n"
-            f"Model metrics: {tool_fns.tool_model_metrics()}\n"
-            "Set GROQ_API_KEY for full chat reasoning."
-        )
-
     from flight_agent.config import load_project_config
 
     hubs = list(load_project_config()["hubs"])
@@ -146,16 +127,19 @@ def _fallback_answer(question: str, error: str) -> str:
     dest = found[1] if len(found) > 1 else ("JFK" if origin != "JFK" else "DFW")
     carrier = next((c for c in ["DL", "AA", "UA", "B6", "WN", "AS"] if c in q), "DL")
 
-    parts = [f"(Groq unavailable: {error})\n", f"Fallback for {carrier} {origin}→{dest}:"]
-    try:
-        parts.append(f"- route_stats: {tool_fns.tool_route_stats(origin, dest, carrier)}")
-    except Exception as exc:  # noqa: BLE001
-        parts.append(f"- route_stats error: {exc}")
-    try:
-        parts.append(
-            f"- predict_delay: {tool_fns.tool_predict_delay(op_unique_carrier=carrier, origin=origin, dest=dest, fl_month=6, fl_dow=1, crs_dep_hour=8)}"
-        )
-    except Exception as exc:  # noqa: BLE001
-        parts.append(f"- predict_delay error: {exc}")
-    parts.append("Set GROQ_API_KEY in .env for full chat reasoning.")
-    return "\n".join(parts)
+    stats = tool_fns.tool_route_stats(origin, dest, carrier)
+    pred = tool_fns.tool_predict_delay(
+        op_unique_carrier=carrier,
+        origin=origin,
+        dest=dest,
+        fl_month=6,
+        fl_dow=1,
+        crs_dep_hour=8,
+    )
+    return (
+        f"(Ollama unavailable: {error})\n\n"
+        f"Fallback tool summary for {carrier} {origin}→{dest}:\n"
+        f"- route_stats: {stats}\n"
+        f"- predict_delay: {pred}\n"
+        "Start Ollama (`ollama serve` + `ollama pull llama3.2:3b`) for full chat reasoning."
+    )

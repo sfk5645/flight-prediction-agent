@@ -105,7 +105,6 @@ def _best_f1_threshold(y_true, proba: np.ndarray) -> tuple[float, float]:
 def train_model(
     sample_limit: int | None = None,
     publish_hf: bool = False,
-    publish_r2: bool | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     cfg = load_project_config()
@@ -269,12 +268,6 @@ def train_model(
             from flight_agent.train.publish import publish_to_hf
 
             publish_to_hf(model_path, sample_path, metrics)
-
-        do_publish_r2 = settings.r2_configured if publish_r2 is None else publish_r2
-        if do_publish_r2:
-            from flight_agent.train.r2_model import push_model_to_r2
-
-            push_model_to_r2(model_dir)
 
         print(
             f"Training done: roc_auc={metrics['roc_auc']:.3f} "
