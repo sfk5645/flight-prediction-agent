@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Bronze Parquet lake under data/raw
+    tables:
+      - name: bts_flights
+        meta:
+          external_location: "read_parquet('{{ env_var('FLIGHT_DATA_DIR') }}/raw/bts/**/*.parquet', hive_partitioning=true, union_by_name=true)"
+      - name: weather
+        meta:
+          external_location: "read_parquet('{{ env_var('FLIGHT_DATA_DIR') }}/raw/weather/**/*.parquet', hive_partitioning=true, union_by_name=true)"
+      - name: airports
+        meta:
+          external_location: "read_parquet('{{ env_var('FLIGHT_DATA_DIR') }}/raw/airports/*.parquet', union_by_name=true)"

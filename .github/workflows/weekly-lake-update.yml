@@ -1,0 +1,106 @@
+name: Weekly lake update
+
+# Discover newly published BTS months, upload missing partitions to R2,
+# prune to retention_months, dbt + train when needed, push model to R2
+# for Streamlit Community Cloud.
+# Requires R2_* secrets. Falls back to sample ingest when secrets are absent.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      use_sample:
+        description: "Force synthetic sample (ignore live BTS)"
+        type: boolean
+        default: false
+      force_retrain:
+        description: "Force dbt + train even if the window did not move"
+        type: boolean
+        default: false
+      push_model_only:
+        description: "Skip ingest; only push existing/cached model to R2"
+        type: boolean
+        default: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install package
+        run: uv sync --all-groups
+
+      - name: Restore prior model / train state
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/local
+            mlflow.db
+          key: model-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            model-${{ github.ref_name }}-
+            model-
+
+      - name: Incremental ingest → R2 (+ auto-retrain)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push_model_only != true }}
+        env:
+          FLIGHT_DATA_DIR: ${{ github.workspace }}/data
+          FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
+          FLIGHT_MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+          FLIGHT_MODEL_DIR: ${{ github.workspace }}/models/local
+          FLIGHT_DUCKDB_KEEP_LOCAL: "false"
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.force_retrain }}" = "true" ]; then
+            rm -f models/local/train_state.json
+          fi
+          if [ "${{ inputs.use_sample }}" = "true" ] || [ -z "${R2_ACCOUNT_ID:-}" ]; then
+            echo "Using sample ingest (no R2 secrets or forced sample)"
+            uv run flight ingest all --sample --incremental --retrain --train-sample-limit 20000
+          else
+            uv run flight ingest all --to-r2 --no-keep-local --incremental --retrain
+          fi
+
+      - name: Push model artifacts to R2
+        env:
+          FLIGHT_MODEL_DIR: ${{ github.workspace }}/models/local
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${R2_ACCESS_KEY_ID:-}" ]; then
+            echo "R2 secrets not set — skipping model push"
+            exit 0
+          fi
+          if [ ! -f models/local/model.joblib ]; then
+            echo "No local model.joblib — skipping R2 model push"
+            exit 0
+          fi
+          uv run flight model push
+
+      - name: Upload model artifact (Actions UI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-local
+          path: models/local/
+          if-no-files-found: ignore
+          retention-days: 14

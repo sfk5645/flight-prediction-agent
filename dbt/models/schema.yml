@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: stg_flights
+    columns:
+      - name: fl_date
+        tests: [not_null]
+      - name: origin
+        tests: [not_null]
+      - name: dest
+        tests: [not_null]
+
+  - name: flt_flights_clean
+    columns:
+      - name: arr_delay_15
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+                quote: false
+
+  - name: flt_route_delay_stats
+    columns:
+      - name: origin
+        tests: [not_null]
+      - name: dest
+        tests: [not_null]
+
+  - name: flt_airport_hour_stats
+    description: Historical congestion profiles by airport and clock hour
+    columns:
+      - name: airport
+        tests: [not_null]
+      - name: hour
+        tests: [not_null]
+
+  - name: flt_carrier_delay_stats
+    columns:
+      - name: op_unique_carrier
+        tests: [not_null]

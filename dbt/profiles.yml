@@ -1,0 +1,34 @@
+flight_agent:
+  target: "{{ env_var('FLIGHT_DBT_TARGET', 'dev') }}"
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('FLIGHT_DUCKDB_PATH') }}"
+      threads: 4
+      extensions:
+        - parquet
+        - httpfs
+      settings:
+        s3_region: auto
+    r2:
+      type: duckdb
+      path: "{{ env_var('FLIGHT_DUCKDB_PATH') }}"
+      threads: 4
+      extensions:
+        - parquet
+        - httpfs
+      secrets:
+        - type: s3
+          region: auto
+          endpoint: "{{ env_var('R2_S3_ENDPOINT') }}"
+          key_id: "{{ env_var('R2_ACCESS_KEY_ID') }}"
+          secret: "{{ env_var('R2_SECRET_ACCESS_KEY') }}"
+          url_style: path
+          use_ssl: true
+      settings:
+        s3_region: auto
+        s3_endpoint: "{{ env_var('R2_S3_ENDPOINT') }}"
+        s3_access_key_id: "{{ env_var('R2_ACCESS_KEY_ID') }}"
+        s3_secret_access_key: "{{ env_var('R2_SECRET_ACCESS_KEY') }}"
+        s3_url_style: path
+        s3_use_ssl: true

@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.ipynb_checkpoints/
+*.log
+
+# Env / secrets (never commit real credentials)
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+**/secrets.toml
+!.streamlit/secrets.toml.example
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# Data & ML artifacts (live on R2 / local only)
+data/raw/
+data/curated/
+data/duckdb/
+*.duckdb
+*.duckdb.wal
+mlruns/
+mlflow.db
+mlartifacts/
+models/local/
+*.joblib
+*.parquet
+!fixtures/**/*.parquet
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/package-lock.yml
+
+# IDE / OS
+.DS_Store
+**/.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+.AppleDouble
+.LSOverride
+__MACOSX/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.cursor/
+
+# Misc / local tooling
+uv-cache/
+.cache/
+tmp/
+temp/

@@ -1,0 +1,25 @@
+name: flight_agent
+version: 1.0.0
+config-version: 2
+profile: flight_agent
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - target
+  - dbt_packages
+
+models:
+  flight_agent:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+
+vars:
+  data_dir: "{{ env_var('FLIGHT_DATA_DIR') }}"

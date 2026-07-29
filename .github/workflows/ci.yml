@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install package
+        run: uv sync --all-groups
+
+      - name: Demo smoke (ingest → dbt → train)
+        env:
+          FLIGHT_DATA_DIR: ${{ github.workspace }}/data
+          FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
+          FLIGHT_MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+          FLIGHT_MODEL_DIR: ${{ github.workspace }}/models/local
+        run: uv run flight demo
+
+      - name: API health import check
+        env:
+          FLIGHT_MODEL_DIR: ${{ github.workspace }}/models/local
+          FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
+        run: |
+          uv run python -c "from flight_agent.serve.app import app; from flight_agent.serve.services import predict_delay; print(predict_delay(op_unique_carrier='DL', origin='ATL', dest='LAX', fl_month=6, fl_dow=1, crs_dep_hour=8))"

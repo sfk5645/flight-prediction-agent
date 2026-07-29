@@ -1,0 +1,105 @@
+name: Daily pipeline
+
+# Light sample smoke on a schedule. Full R2 lake + train lives in weekly-lake-update.yml.
+# Use workflow_dispatch for a live incremental run or optional retrain.
+
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+    inputs:
+      use_sample:
+        description: "Use synthetic BTS/weather instead of live downloads"
+        type: boolean
+        default: true
+      run_train:
+        description: "Retrain model after dbt"
+        type: boolean
+        default: false
+      publish_r2:
+        description: "Push trained model to R2 (needs R2_* secrets)"
+        type: boolean
+        default: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install package
+        run: uv sync --all-groups
+
+      - name: Ingest
+        env:
+          FLIGHT_DATA_DIR: ${{ github.workspace }}/data
+          FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.use_sample }}" = "false" ]; then
+            if [ -n "${R2_ACCESS_KEY_ID:-}" ]; then
+              uv run flight ingest all --to-r2 --no-keep-local --incremental --no-retrain
+            else
+              uv run flight ingest all --incremental --no-retrain
+            fi
+          else
+            uv run flight ingest all --sample --fixed --full --no-retrain
+          fi
+
+      - name: dbt build
+        env:
+          FLIGHT_DATA_DIR: ${{ github.workspace }}/data
+          FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
+          FLIGHT_DUCKDB_KEEP_LOCAL: "true"
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.use_sample }}" = "false" ] && [ -n "${R2_ACCESS_KEY_ID:-}" ]; then
+            uv run flight dbt build --from-r2
+          else
+            uv run flight dbt build
+          fi
+
+      - name: Train (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_train }}
+        env:
+          FLIGHT_DATA_DIR: ${{ github.workspace }}/data
+          FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
+          FLIGHT_MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+          FLIGHT_MODEL_DIR: ${{ github.workspace }}/models/local
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+        run: |
+          if [ "${{ inputs.publish_r2 }}" = "true" ]; then
+            uv run flight train --sample-limit 20000 --publish-r2
+          else
+            uv run flight train --sample-limit 20000 --no-publish-r2
+          fi
+
+      - name: Upload model artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_train }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-local
+          path: models/local/
+          if-no-files-found: ignore
+          retention-days: 7
