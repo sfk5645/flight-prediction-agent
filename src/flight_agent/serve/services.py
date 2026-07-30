@@ -10,7 +10,11 @@ from typing import Any
 import joblib
 import pandas as pd
 
-from flight_agent.codes import normalize_airport, normalize_carrier, parse_weather_date
+from flight_agent.codes import (
+    normalize_airport,
+    normalize_carrier,
+    parse_weather_when,
+)
 from flight_agent.config import get_settings
 from flight_agent.features.build import DEFAULTS, FEATURE_COLUMNS, add_derived_features
 from flight_agent.ingest.warehouse import warehouse_available, warehouse_connection
@@ -155,10 +159,10 @@ def predict_delay(
         if v is not None:
             enriched[k] = v
 
-    # Pull weather from lake when not provided (daily lake may be fresher than BTS labels)
+    # Pull hourly weather from lake when not provided (matched to CRS dep hour)
     weather_as_of: dict[str, Any] = {}
     if origin_temp_c is None:
-        wx = get_weather(origin)
+        wx = get_weather(origin, hour=crs_dep_hour)
         if wx.get("temperature_2m_mean") is not None:
             enriched["origin_temp_c"] = float(wx["temperature_2m_mean"])
         if wx.get("precipitation_sum") is not None:
@@ -169,8 +173,12 @@ def predict_delay(
             enriched["origin_weathercode"] = int(wx["weathercode"])
         if wx.get("weather_date") is not None:
             weather_as_of["origin_weather_date"] = wx["weather_date"]
+        if wx.get("weather_hour") is not None:
+            weather_as_of["origin_weather_hour"] = wx["weather_hour"]
     if dest_temp_c is None:
-        wxd = get_weather(dest)
+        # Dest arrival hour unknown at predict time — use same clock hour as dep
+        # unless caller overrides; keeps hour-specific conditions in the model.
+        wxd = get_weather(dest, hour=crs_dep_hour)
         if wxd.get("temperature_2m_mean") is not None:
             enriched["dest_temp_c"] = float(wxd["temperature_2m_mean"])
         if wxd.get("precipitation_sum") is not None:
@@ -181,6 +189,8 @@ def predict_delay(
             enriched["dest_weathercode"] = int(wxd["weathercode"])
         if wxd.get("weather_date") is not None:
             weather_as_of["dest_weather_date"] = wxd["weather_date"]
+        if wxd.get("weather_hour") is not None:
+            weather_as_of["dest_weather_hour"] = wxd["weather_hour"]
 
     row = pd.DataFrame(
         [
@@ -378,56 +388,94 @@ def get_carrier_stats(carrier: str) -> dict[str, Any]:
     return _row_to_dict(row)
 
 
-def get_weather(airport: str, date: str | None = None) -> dict[str, Any]:
+def get_weather(
+    airport: str,
+    date: str | None = None,
+    hour: int | None = None,
+) -> dict[str, Any]:
+    """
+    Hourly weather for an airport.
+
+    ``date`` may be free text (today / YYYY-MM-DD / today at 10pm).
+    ``hour`` is 0–23; when omitted, uses hour parsed from ``date`` or the
+    latest available hour for that airport/day.
+    """
     airport_c = normalize_airport(airport) or airport.upper()
-    iso_date, date_note = parse_weather_date(date)
+    iso_date, parsed_hour, date_note = parse_weather_when(date)
+    hour_i = hour if hour is not None else parsed_hour
+    if hour_i is not None:
+        hour_i = int(hour_i) % 24
+
     if not warehouse_available():
         return {"airport": airport_c, "note": "Warehouse not built."}
     try:
         with warehouse_connection(read_only=True) as con:
             df = None
-            if iso_date:
+            if iso_date is not None and hour_i is not None:
+                df = con.execute(
+                    """
+                    select * from stg_weather
+                    where airport = ?
+                      and weather_date = cast(? as date)
+                      and weather_hour = ?
+                    """,
+                    [airport_c, iso_date, hour_i],
+                ).fetchdf()
+            elif iso_date is not None:
                 df = con.execute(
                     """
                     select * from stg_weather
                     where airport = ? and weather_date = cast(? as date)
+                    order by weather_hour desc
+                    limit 1
                     """,
                     [airport_c, iso_date],
                 ).fetchdf()
+            elif hour_i is not None:
+                df = con.execute(
+                    """
+                    select * from stg_weather
+                    where airport = ? and weather_hour = ?
+                    order by weather_date desc
+                    limit 1
+                    """,
+                    [airport_c, hour_i],
+                ).fetchdf()
+
             if df is None or df.empty:
                 latest = con.execute(
                     """
                     select * from stg_weather
                     where airport = ?
-                    order by weather_date desc
+                    order by weather_date desc, weather_hour desc
                     limit 1
                     """,
                     [airport_c],
                 ).fetchdf()
-                if iso_date and not latest.empty:
+                if not latest.empty and (iso_date is not None or hour_i is not None):
                     date_note = "; ".join(
                         p
                         for p in [
                             date_note,
-                            f"No weather row for {iso_date}; showing latest lake day instead.",
+                            "Exact hour/date miss; showing latest lake weather hour.",
                         ]
                         if p
                     )
-                    df = latest
-                else:
-                    df = latest
+                df = latest
     except Exception as exc:  # noqa: BLE001
         return {
             "airport": airport_c,
             "date": iso_date or date,
+            "hour": hour_i,
             "note": f"Weather lookup failed: {exc}",
         }
     if df is None or df.empty:
         out = {
             "airport": airport_c,
             "date": iso_date or date,
-            "note": "No weather rows found for that airport "
-            "(lake weather is daily and may lag the calendar).",
+            "hour": hour_i,
+            "note": "No hourly weather rows found for that airport "
+            "(lake weather is hourly and may lag the calendar).",
         }
         if date_note:
             out["date_note"] = date_note

@@ -1,7 +1,7 @@
 {{ config(materialized='table') }}
 
--- Feature-ready flight grain: weather + historical congestion/carrier profiles.
--- Same-flight taxi/NAS/cause minutes are kept for analysis but NOT used as ML inputs.
+-- Feature-ready flight grain: hourly weather + historical congestion/carrier profiles.
+-- Origin weather joined on CRS departure hour; dest on CRS arrival hour.
 
 select
   f.*,
@@ -33,9 +33,11 @@ from {{ ref('flt_flights_clean') }} f
 left join {{ ref('stg_weather') }} w
   on f.origin = w.airport
  and f.fl_date = w.weather_date
+ and f.crs_dep_hour = w.weather_hour
 left join {{ ref('stg_weather') }} wd
   on f.dest = wd.airport
  and f.fl_date = wd.weather_date
+ and f.crs_arr_hour = wd.weather_hour
 left join {{ ref('flt_airport_hour_stats') }} oh
   on f.origin = oh.airport
  and f.crs_dep_hour = oh.hour

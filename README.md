@@ -79,7 +79,7 @@ uv run flight agent "Will DL ATL to LAX on a Monday at 8am be delayed?"
    - `flight ingest all --fixed` — use static `date_range` start/end in config
    - `flight ingest all --sample` — synthetic bronze for demos/CI
    - `flight ingest prune` — drop data older than 48 months (also after `ingest all`)
-   - `flight ingest weather --through-today` — daily Open-Meteo refresh past BTS lag
+   - `flight ingest weather --through-today` — daily Open-Meteo **hourly** refresh past BTS lag
 2. **Transform** — `flight dbt build --from-r2` reads bronze from R2, builds marts,
    then **pushes gold to R2** (`curated/*.parquet` + `warehouse/flight_agent.duckdb`)
    and deletes the local DuckDB by default (`FLIGHT_DUCKDB_KEEP_LOCAL=false`).
@@ -92,11 +92,14 @@ uv run flight agent "Will DL ATL to LAX on a Monday at 8am be delayed?"
    older than 48 months (same window as local).
 4. **Schedule**
    - [`.github/workflows/daily-pipeline.yml`](.github/workflows/daily-pipeline.yml)
-     — **daily** Open-Meteo weather → R2 through today, then **dbt + retrain**
+     — **daily** Open-Meteo **hourly** weather → R2 through today, then **dbt + retrain**
      (and model push to R2). Use workflow input `skip_retrain` to ingest only.
    - [`.github/workflows/weekly-lake-update.yml`](.github/workflows/weekly-lake-update.yml)
      — **Mondays:** incremental BTS (+ weather) → R2; auto-retrains when new BTS
      months land, weather updates, or the window moves.
+
+Flights join weather on **airport + date + CRS hour** (origin dep hour / dest arr hour)
+so delay predictions use hour-specific conditions.
 
 ## MLOps
 

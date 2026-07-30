@@ -1,6 +1,6 @@
 name: Daily weather refresh
 
-# Daily: pull Open-Meteo hub weather through today → R2, then rebuild marts + retrain.
+# Daily: pull Open-Meteo hourly hub weather through today → R2, then rebuild marts + retrain.
 # BTS flight months stay on the weekly lake job; weather-only days still refresh the model
 # so delay features track current conditions.
 

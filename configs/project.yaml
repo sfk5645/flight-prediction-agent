@@ -19,17 +19,18 @@ date_range:
   end_month: 2
 
 weather:
-  # Daily Open-Meteo archive. through_today=true extends past BTS lag so serving
-  # features stay fresh; BTS/labels still refresh weekly and retrain on that cadence.
+  # Hourly Open-Meteo (refreshed daily). through_today extends past BTS lag so
+  # serving/training can use hour-of-day conditions; BTS labels stay weekly.
+  grain: hourly
   through_today: true
   # On incremental refresh, re-pull this many trailing days for late revisions.
   daily_lookback_days: 7
   timezone: America/New_York
   variables:
-    - temperature_2m_mean
-    - precipitation_sum
-    - windspeed_10m_max
-    - weathercode
+    - temperature_2m
+    - precipitation
+    - wind_speed_10m
+    - weather_code
 
 model:
   target: arr_delay_15

@@ -21,7 +21,7 @@ SYSTEM_PROMPT = """You are an aviation operations assistant for US hub flights
 Rules:
 - Use tools for facts (predictions, route stats, weather, congestion, model metrics). Do not invent numbers.
 - Users may say full airline/airport names (United, Dulles, O'Hare). Tools accept names or IATA codes.
-- For weather dates use YYYY-MM-DD, "today", or "yesterday". Weather is DAILY (not hourly) and is refreshed more often than BTS flight labels; if the exact day is missing the tool falls back to the latest lake day.
+- For weather use YYYY-MM-DD / today / yesterday and an hour 0-23 (or "10pm"). Weather is HOURLY and joined to flights by CRS departure/arrival hour.
 - If a tool returns n_flights=0 or a note, explain that clearly. Do NOT tell the user to run `flight train` unless the model/metrics tool says the model is missing.
 - Explain results in plain English: probability, congestion/weather drivers, practical advice.
 - Stay on aviation delay / schedule topics. Politely refuse unrelated requests.
@@ -59,9 +59,9 @@ def _build_tools() -> list[StructuredTool]:
             func=tool_fns.tool_weather,
             name="weather",
             description=(
-                "Daily weather features for an airport (IATA or name). "
-                "Optional date: YYYY-MM-DD, today, or yesterday. "
-                "Weather is not hourly — do not pass clock times as the date."
+                "Hourly weather for an airport (IATA or name). "
+                "Optional date: YYYY-MM-DD / today / yesterday (may include 'at 10pm'). "
+                "Optional hour 0-23. Prefer passing hour for accurate conditions."
             ),
         ),
         StructuredTool.from_function(

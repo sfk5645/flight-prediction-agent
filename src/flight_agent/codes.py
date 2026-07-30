@@ -173,23 +173,48 @@ _ISO_DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _US_DATE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b")
 
 
-def parse_weather_date(raw: str | None) -> tuple[str | None, str | None]:
-    """
-    Normalize a free-text date for daily weather lookups.
+def parse_weather_hour(raw: str | None) -> int | None:
+    """Extract 0–23 hour from free text (e.g. '10pm', '22:00', 'at 8')."""
+    if raw is None:
+        return None
+    text = str(raw).strip().lower()
+    if not text:
+        return None
+    m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b", text)
+    if m:
+        hour = int(m.group(1)) % 12
+        if m.group(3).startswith("p"):
+            hour += 12
+        return hour
+    m = re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", text)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"\b(?:at\s+)?(\d{1,2})\b", text)
+    if m:
+        hour = int(m.group(1))
+        if 0 <= hour <= 23:
+            return hour
+    return None
 
-    Returns (YYYY-MM-DD or None for 'latest', optional note).
-    Time-of-day phrases are ignored (weather is daily, not hourly).
+
+def parse_weather_when(
+    raw: str | None,
+) -> tuple[str | None, int | None, str | None]:
+    """
+    Normalize free-text date/time for hourly weather lookups.
+
+    Returns (YYYY-MM-DD or None, hour 0-23 or None, optional note).
     """
     if raw is None:
-        return None, None
+        return None, None, None
     text = str(raw).strip()
     if not text:
-        return None, None
+        return None, None, None
 
+    hour = parse_weather_hour(text)
     lower = text.lower().strip()
     note_parts: list[str] = []
 
-    # Strip clock-time so "today at 10pm" → "today"
     stripped = re.sub(
         r"\b(at\s+)?\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b",
         "",
@@ -198,30 +223,35 @@ def parse_weather_date(raw: str | None) -> tuple[str | None, str | None]:
     )
     stripped = re.sub(r"\b\d{1,2}:\d{2}\b", "", stripped)
     stripped = re.sub(r"\s+", " ", stripped).strip(" ,;")
-    if stripped != lower.strip():
-        note_parts.append(
-            "Weather in this lake is daily (not hourly); time of day was ignored."
-        )
+
+    if hour is not None:
+        note_parts.append(f"Using hour={hour} for hourly weather.")
 
     if stripped in ("", "latest", "most recent", "last"):
-        return None, "; ".join(note_parts) or None
+        return None, hour, "; ".join(note_parts) or None
 
     if stripped in ("today", "now") or stripped.startswith("today"):
-        return date.today().isoformat(), "; ".join(
-            note_parts
-            + ["Resolved 'today' to calendar date (may be ahead of lake coverage)."]
+        return (
+            date.today().isoformat(),
+            hour,
+            "; ".join(
+                note_parts
+                + ["Resolved 'today' to calendar date (may be ahead of lake coverage)."]
+            ),
         )
 
     if stripped in ("yesterday",) or stripped.startswith("yesterday"):
-        return (date.today() - timedelta(days=1)).isoformat(), "; ".join(
-            note_parts + ["Resolved 'yesterday' to calendar date."]
+        return (
+            (date.today() - timedelta(days=1)).isoformat(),
+            hour,
+            "; ".join(note_parts + ["Resolved 'yesterday' to calendar date."]),
         )
 
     m = _ISO_DATE.search(text)
     if m:
         try:
             datetime.strptime(m.group(1), "%Y-%m-%d")
-            return m.group(1), "; ".join(note_parts) or None
+            return m.group(1), hour, "; ".join(note_parts) or None
         except ValueError:
             pass
 
@@ -232,19 +262,24 @@ def parse_weather_date(raw: str | None) -> tuple[str | None, str | None]:
             year += 2000
         try:
             d = date(year, month, day)
-            return d.isoformat(), "; ".join(note_parts) or None
+            return d.isoformat(), hour, "; ".join(note_parts) or None
         except ValueError:
             pass
 
-    # Strict ISO attempt on the whole string
     try:
         d = datetime.strptime(stripped[:10], "%Y-%m-%d").date()
-        return d.isoformat(), "; ".join(note_parts) or None
+        return d.isoformat(), hour, "; ".join(note_parts) or None
     except ValueError:
         pass
 
-    return None, (
+    return None, hour, (
         f"Could not parse date '{raw}' (expected YYYY-MM-DD, today, or yesterday); "
-        "using latest available weather day."
+        "using latest available weather."
         + (f" {'; '.join(note_parts)}" if note_parts else "")
     )
+
+
+def parse_weather_date(raw: str | None) -> tuple[str | None, str | None]:
+    """Backward-compatible date-only parser (hour discarded)."""
+    iso, _hour, note = parse_weather_when(raw)
+    return iso, note

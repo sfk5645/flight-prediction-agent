@@ -68,9 +68,12 @@ def route_stats(
 @app.get("/weather")
 def weather(
     airport: str = Query(...),
-    date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date: Optional[str] = Query(
+        None, description="YYYY-MM-DD, today, or free text (e.g. today at 10pm)"
+    ),
+    hour: Optional[int] = Query(None, ge=0, le=23, description="Local clock hour 0-23"),
 ) -> dict:
-    return services.get_weather(airport, date)
+    return services.get_weather(airport, date, hour=hour)
 
 
 @app.get("/congestion")

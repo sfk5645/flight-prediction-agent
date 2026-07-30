@@ -58,10 +58,10 @@ def test_sample_ingest(tmp_path, monkeypatch):
         "weather": {
             "timezone": "UTC",
             "variables": [
-                "temperature_2m_mean",
-                "precipitation_sum",
-                "windspeed_10m_max",
-                "weathercode",
+                "temperature_2m",
+                "precipitation",
+                "wind_speed_10m",
+                "weather_code",
             ],
         },
     }
@@ -258,7 +258,7 @@ def test_normalize_airline_airport_names():
         find_carriers_in_text,
         normalize_airport,
         normalize_carrier,
-        parse_weather_date,
+        parse_weather_when,
     )
 
     assert normalize_carrier("United Airlines") == "UA"
@@ -271,11 +271,12 @@ def test_normalize_airline_airport_names():
     assert find_airports_in_text("weather at Dulles today") == ["IAD"]
     assert "LAX" not in find_airports_in_text("will it be delayed?")
 
-    iso, note = parse_weather_date("today at 10pm")
+    iso, hour, note = parse_weather_when("today at 10pm")
     assert iso is not None and len(iso) == 10
-    assert note and "daily" in note.lower()
+    assert hour == 22
+    assert note
 
-    iso2, note2 = parse_weather_date("not-a-date")
+    iso2, hour2, note2 = parse_weather_when("not-a-date")
     assert iso2 is None
     assert note2 and "Could not parse" in note2
 
@@ -286,6 +287,6 @@ def test_weather_tool_accepts_natural_date():
     from flight_agent.agent.tools import tool_weather
 
     # Must not raise even when lake has no row for "today"
-    payload = json.loads(tool_weather("Dulles", "today at 10pm"))
+    payload = json.loads(tool_weather("Dulles", "today at 10pm", hour=22))
     assert payload.get("airport") == "IAD"
     assert "error" not in payload or "cast" not in str(payload.get("error", "")).lower()

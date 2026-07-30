@@ -36,7 +36,7 @@ with st.sidebar:
 **Example questions**
 - Will Delta from Atlanta to Los Angeles on a Monday morning be delayed?
 - What's the historical delay rate O'Hare→JFK on American?
-- How's the weather at Dulles today?
+- How's the weather at Dulles today at 10pm?
 - How congested is Dallas Fort Worth at 5pm?
 - How good is the delay model?
 """

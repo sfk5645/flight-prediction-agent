@@ -1,9 +1,9 @@
-"""Ingest daily weather from Open-Meteo for configured hubs."""
+"""Ingest hourly weather from Open-Meteo for configured hubs."""
 
 from __future__ import annotations
 
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import httpx
 import pandas as pd
@@ -16,18 +16,45 @@ from flight_agent.ingest.storage import read_parquet, write_parquet
 OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 _USER_AGENT = "flight-prediction-agent/1.0 (github.com/sfk5645/flight-prediction-agent)"
-# Free forecast API allows up to 92 past days — used for daily freshness.
 _FORECAST_PAST_DAYS_MAX = 92
+
+# Canonical bronze columns (hourly grain).
+_CANONICAL_VARS = (
+    "temperature_2m",
+    "precipitation",
+    "wind_speed_10m",
+    "weather_code",
+)
+_VAR_ALIASES = {
+    "temperature_2m_mean": "temperature_2m",
+    "precipitation_sum": "precipitation",
+    "windspeed_10m_max": "wind_speed_10m",
+    "windspeed_10m": "wind_speed_10m",
+    "weathercode": "weather_code",
+}
+
+
+def _hourly_variables(cfg_vars: list[str]) -> list[str]:
+    out: list[str] = []
+    for v in cfg_vars:
+        canon = _VAR_ALIASES.get(v, v)
+        if canon not in out:
+            out.append(canon)
+    for required in _CANONICAL_VARS:
+        if required not in out:
+            out.append(required)
+    return out
 
 
 def _load_existing_weather(rel: str, *, prefer_r2: bool) -> pd.DataFrame | None:
-    """Load prior weather; when writing to R2 prefer the cloud object over stale local."""
+    """Load prior weather; prefer R2 when uploading. Discard legacy daily grain."""
     settings = get_settings()
     relative = rel.lstrip("/").replace("\\", "/")
     if relative.startswith("raw/"):
         relative = relative[4:]
     key = f"raw/{relative}"
 
+    df: pd.DataFrame | None = None
     if prefer_r2 and settings.r2_configured:
         try:
             import io
@@ -35,37 +62,87 @@ def _load_existing_weather(rel: str, *, prefer_r2: bool) -> pd.DataFrame | None:
             from flight_agent.ingest.r2_sync import _client
 
             obj = _client().get_object(Bucket=settings.r2_bucket, Key=key)
-            return pd.read_parquet(io.BytesIO(obj["Body"].read()))
+            df = pd.read_parquet(io.BytesIO(obj["Body"].read()))
         except Exception as exc:  # noqa: BLE001
             print(f"R2 weather miss for {key}: {exc}")
 
-    try:
-        return read_parquet(rel)
-    except FileNotFoundError:
+    if df is None:
+        try:
+            df = read_parquet(rel)
+        except FileNotFoundError:
+            return None
+        except Exception as exc:  # noqa: BLE001
+            print(f"Could not read existing weather {rel}: {exc}")
+            return None
+
+    if df is None or df.empty:
         return None
-    except Exception as exc:  # noqa: BLE001
-        print(f"Could not read existing weather {rel}: {exc}")
+    if "hour" not in df.columns:
+        print(
+            f"Existing weather at {rel} is daily grain; discarding for hourly rebuild"
+        )
         return None
+    return df
 
 
 def _http_client() -> httpx.Client:
     return httpx.Client(
-        timeout=90.0,
+        timeout=120.0,
         follow_redirects=True,
         headers={"User-Agent": _USER_AGENT},
     )
 
 
-def _frame_from_daily(
-    daily: dict, *, airport: str, lat: float, lon: float
+def _normalize_hourly_frame(
+    frame: pd.DataFrame, *, airport: str, lat: float, lon: float
 ) -> pd.DataFrame:
-    if not daily or "time" not in daily:
+    """Map Open-Meteo hourly JSON columns → bronze schema."""
+    if frame.empty:
+        return frame
+    out = frame.rename(columns={"time": "datetime"})
+    # Compatibility renames if older variable names slipped through
+    out = out.rename(
+        columns={
+            "temperature_2m_mean": "temperature_2m",
+            "precipitation_sum": "precipitation",
+            "windspeed_10m_max": "wind_speed_10m",
+            "windspeed_10m": "wind_speed_10m",
+            "weathercode": "weather_code",
+        }
+    )
+    ts = pd.to_datetime(out["datetime"], errors="coerce")
+    out["datetime"] = ts
+    out["date"] = ts.dt.strftime("%Y-%m-%d")
+    out["hour"] = ts.dt.hour.astype("Int64")
+    out["airport"] = airport
+    out["lat"] = lat
+    out["lon"] = lon
+    keep = [
+        "datetime",
+        "date",
+        "hour",
+        "temperature_2m",
+        "precipitation",
+        "wind_speed_10m",
+        "weather_code",
+        "airport",
+        "lat",
+        "lon",
+    ]
+    for col in keep:
+        if col not in out.columns:
+            out[col] = pd.NA
+    return out[keep]
+
+
+def _frame_from_hourly(
+    hourly: dict, *, airport: str, lat: float, lon: float
+) -> pd.DataFrame:
+    if not hourly or "time" not in hourly:
         return pd.DataFrame()
-    frame = pd.DataFrame(daily).rename(columns={"time": "date"})
-    frame["airport"] = airport
-    frame["lat"] = lat
-    frame["lon"] = lon
-    return frame
+    return _normalize_hourly_frame(
+        pd.DataFrame(hourly), airport=airport, lat=lat, lon=lon
+    )
 
 
 def _get_json(client: httpx.Client, url: str, params: dict) -> dict:
@@ -102,16 +179,16 @@ def _fetch_archive_range(
                 "longitude": lon,
                 "start_date": cursor.isoformat(),
                 "end_date": chunk_end.isoformat(),
-                "daily": ",".join(variables),
+                "hourly": ",".join(variables),
                 "timezone": timezone,
             },
         )
-        frame = _frame_from_daily(
-            payload.get("daily", {}), airport=airport, lat=lat, lon=lon
+        frame = _frame_from_hourly(
+            payload.get("hourly", {}), airport=airport, lat=lat, lon=lon
         )
         if not frame.empty:
             frames.append(frame)
-        time.sleep(0.3)
+        time.sleep(0.35)
         cursor = chunk_end + timedelta(days=1)
     if not frames:
         return pd.DataFrame()
@@ -130,7 +207,7 @@ def _fetch_forecast_recent(
     airport: str,
     as_of: date,
 ) -> pd.DataFrame:
-    """Pull recent daily weather via forecast past_days (better for 'through today')."""
+    """Pull recent hourly weather via forecast past_days (covers calendar today)."""
     if end < start:
         return pd.DataFrame()
     past_days = min(_FORECAST_PAST_DAYS_MAX, (as_of - start).days + 1)
@@ -141,22 +218,21 @@ def _fetch_forecast_recent(
         {
             "latitude": lat,
             "longitude": lon,
-            "daily": ",".join(variables),
+            "hourly": ",".join(variables),
             "timezone": timezone,
             "past_days": past_days,
             "forecast_days": 1,
         },
     )
-    frame = _frame_from_daily(
-        payload.get("daily", {}), airport=airport, lat=lat, lon=lon
+    frame = _frame_from_hourly(
+        payload.get("hourly", {}), airport=airport, lat=lat, lon=lon
     )
     if frame.empty:
         return frame
-    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-    lo = pd.Timestamp(start)
-    hi = pd.Timestamp(end)
-    frame = frame[(frame["date"] >= lo) & (frame["date"] <= hi)]
-    return frame
+    ts = pd.to_datetime(frame["datetime"], errors="coerce")
+    lo = pd.Timestamp(datetime.combine(start, datetime.min.time()))
+    hi = pd.Timestamp(datetime.combine(end, datetime.max.time()))
+    return frame[(ts >= lo) & (ts <= hi)].copy()
 
 
 def _fetch_weather_range(
@@ -171,10 +247,6 @@ def _fetch_weather_range(
     airport: str,
     as_of: date,
 ) -> pd.DataFrame:
-    """
-    Archive for older history; forecast past_days for the recent window
-    (covers calendar today even when archive lags).
-    """
     if end < start:
         return pd.DataFrame()
 
@@ -229,14 +301,10 @@ def ingest_weather(
     as_of: date | None = None,
 ) -> list[str]:
     """
-    Ingest daily weather for hubs.
+    Ingest hourly weather for hubs (refreshed on a daily cadence).
 
-    Live rolling mode extends through calendar ``as_of`` (default today) so
-    serving can use fresh weather while BTS flight labels lag and update weekly.
-
-    Incremental mode loads existing lake weather (preferring R2 when uploading)
-    and only fetches the missing date gap + a short lookback for revisions.
-    Live fetch failures skip the gap (no synthetic poison) unless ``use_sample``.
+    Joins to flights by airport + flight date + CRS hour so predictions
+    use hour-specific conditions. Live rolling mode extends through ``as_of``.
     """
     ensure_dirs()
     cfg = load_project_config()
@@ -249,12 +317,12 @@ def ingest_weather(
         use_sample=use_sample,
         through_today=through_today,
     )
-    print(f"Weather window: {window} (as_of={as_of.isoformat()})")
+    print(f"Weather window (hourly): {window} (as_of={as_of.isoformat()})")
 
     airports = load_airports_frame().set_index("airport")
     prefer_r2 = bool(to_r2 and get_settings().r2_configured)
     lookback_days = int((cfg.get("weather") or {}).get("daily_lookback_days", 7))
-    variables = list(cfg["weather"]["variables"])
+    variables = _hourly_variables(list(cfg["weather"]["variables"]))
     timezone = cfg["weather"].get("timezone", "UTC")
 
     window_start = date(window.start.year, window.start.month, 1)
@@ -287,7 +355,7 @@ def ingest_weather(
                 existing_dates = pd.to_datetime(existing["date"], errors="coerce")
                 last = existing_dates.max()
                 if pd.notna(last):
-                    last_d = last.date()
+                    last_d = last.date() if hasattr(last, "date") else pd.Timestamp(last).date()
                     fetch_start = max(
                         window_start, last_d - timedelta(days=lookback_days - 1)
                     )
@@ -321,7 +389,7 @@ def ingest_weather(
                     )
                     if chunk.empty:
                         print(
-                            f"Weather {airport}: Open-Meteo returned no rows "
+                            f"Weather {airport}: Open-Meteo returned no hourly rows "
                             f"for {fetch_start}→{window_end}"
                         )
                     else:
@@ -343,7 +411,7 @@ def ingest_weather(
             loc = write_parquet(merged, rel, to_r2=to_r2, keep_local=keep_local)
             written.append(loc)
             print(
-                f"Weather {airport}: wrote {len(merged):,} days "
+                f"Weather {airport}: wrote {len(merged):,} hours "
                 f"(fetched {fetch_start}→{window_end}) → {loc}"
             )
     finally:
@@ -356,36 +424,46 @@ def _finalize_weather_frame(
     df: pd.DataFrame, window_start: date, window_end: date
 ) -> pd.DataFrame:
     out = df.copy()
+    if "hour" not in out.columns and "datetime" in out.columns:
+        ts = pd.to_datetime(out["datetime"], errors="coerce")
+        out["date"] = ts.dt.strftime("%Y-%m-%d")
+        out["hour"] = ts.dt.hour
     out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out = out.dropna(subset=["date"]).sort_values("date")
-    out = out.drop_duplicates(subset=["date"], keep="last")
+    out["hour"] = pd.to_numeric(out["hour"], errors="coerce")
+    out = out.dropna(subset=["date", "hour"]).sort_values(["date", "hour"])
+    out = out.drop_duplicates(subset=["date", "hour"], keep="last")
     lo = pd.Timestamp(window_start)
     hi = pd.Timestamp(window_end)
     out = out[(out["date"] >= lo) & (out["date"] <= hi)]
     out["date"] = out["date"].dt.strftime("%Y-%m-%d")
+    out["hour"] = out["hour"].astype(int)
+    if "datetime" in out.columns:
+        out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce").dt.strftime(
+            "%Y-%m-%dT%H:%M"
+        )
     return out.reset_index(drop=True)
 
 
 def _synthetic_weather_range(
     airport: str, start: date, end: date, lat: float, lon: float
 ) -> pd.DataFrame:
-    dates: list[str] = []
-    temps: list[float] = []
+    rows: list[dict] = []
     cursor = start
     while cursor <= end:
-        dates.append(cursor.isoformat())
-        temps.append(15.0 + (cursor.month - 6) * 1.5)
+        for hour in range(24):
+            rows.append(
+                {
+                    "datetime": f"{cursor.isoformat()}T{hour:02d}:00",
+                    "date": cursor.isoformat(),
+                    "hour": hour,
+                    "temperature_2m": 15.0 + (cursor.month - 6) * 1.5 + (hour - 12) * 0.2,
+                    "precipitation": 0.1 if hour % 7 == 0 else 0.0,
+                    "wind_speed_10m": 12.0 + (hour % 5),
+                    "weather_code": 1 if hour % 7 else 0,
+                    "airport": airport,
+                    "lat": lat,
+                    "lon": lon,
+                }
+            )
         cursor += timedelta(days=1)
-    n = len(dates)
-    return pd.DataFrame(
-        {
-            "date": dates,
-            "temperature_2m_mean": temps,
-            "precipitation_sum": [0.5] * n,
-            "windspeed_10m_max": [20.0] * n,
-            "weathercode": [1] * n,
-            "airport": airport,
-            "lat": lat,
-            "lon": lon,
-        }
-    )
+    return pd.DataFrame(rows)

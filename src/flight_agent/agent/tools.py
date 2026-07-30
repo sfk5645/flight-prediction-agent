@@ -54,14 +54,24 @@ def tool_route_stats(origin: str, dest: str, carrier: Optional[str] = None) -> s
         return json.dumps({"error": str(exc)})
 
 
-def tool_weather(airport: str, date: Optional[str] = None) -> str:
-    """Weather features for an airport (IATA or name); date YYYY-MM-DD / today / yesterday."""
+def tool_weather(
+    airport: str,
+    date: Optional[str] = None,
+    hour: Optional[int] = None,
+) -> str:
+    """Hourly weather for an airport; date YYYY-MM-DD/today; optional hour 0-23."""
     try:
         return json.dumps(
-            services.get_weather(normalize_airport(airport) or airport, date)
+            services.get_weather(
+                normalize_airport(airport) or airport,
+                date,
+                hour=hour,
+            )
         )
     except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": str(exc), "airport": airport, "date": date})
+        return json.dumps(
+            {"error": str(exc), "airport": airport, "date": date, "hour": hour}
+        )
 
 
 def tool_airport_congestion(airport: str, hour: int) -> str:

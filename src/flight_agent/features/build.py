@@ -133,7 +133,7 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
         + 0.4 * out["carrier_hist_pct_delay_15"].fillna(0.2)
     )
     out["bad_weather"] = (
-        (out["precip_total_mm"] > 5.0) | (out["wind_max_kmh"] > 40.0)
+        (out["precip_total_mm"] > 2.0) | (out["wind_max_kmh"] > 40.0)
     ).astype(int)
     out["peak_x_origin_delay"] = (
         out["is_peak_hour"].fillna(0).astype(float)
