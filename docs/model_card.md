@@ -3,9 +3,7 @@
 ## Problem
 
 Predict whether a US hub flight will arrive **15 or more minutes late**
-(`arr_delay_15`), matching the common BTS on-time definition, and (optionally)
-estimate **how many minutes** late via an `arr_delay` regressor
-(`predicted_arr_delay_minutes`).
+(`arr_delay_15`), matching the common BTS on-time definition.
 
 ## Data
 
@@ -43,17 +41,13 @@ Default hubs: LAX, JFK, ORD, DEN, ATL, IAD, DFW.
 sklearn `Pipeline`: `OneHotEncoder` (categoricals) + `XGBClassifier`
 (fallback: `HistGradientBoostingClassifier` if XGBoost/OpenMP unavailable).
 
-When `model.train_regressor` is true (default), a second pipeline
-(`XGBRegressor` / `HistGradientBoostingRegressor`) predicts clipped
-`arr_delay` minutes → `models/local/model_regressor.joblib`.
-
-Tracked with MLflow experiment `flight-delay`. Local artifacts:
-`models/local/model.joblib` (+ optional `model_regressor.joblib`).
+Tracked with MLflow experiment `flight-delay`. Local artifact:
+`models/local/model.joblib`.
 
 ## Evaluation
 
 Metrics written to `models/local/metrics.json` (accuracy, precision, recall, F1,
-ROC-AUC, per-origin F1; plus regression MAE/RMSE/bias when trained).
+ROC-AUC, and per-origin F1).
 
 ## Limitations
 

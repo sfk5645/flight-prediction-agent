@@ -130,7 +130,7 @@ uv run flight drift
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | Liveness + model loaded flag |
-| `POST /predict` | ≥15 min late probability + expected delay minutes (+ congestion drivers) |
+| `POST /predict` | Delay probability (+ congestion drivers) |
 | `GET /route-stats` | Historical route delay / taxi / NAS |
 | `GET /congestion` | Airport×hour congestion profile |
 | `GET /carrier-stats` | Carrier reliability summary |

@@ -24,8 +24,7 @@ Rules:
 - For weather use YYYY-MM-DD / today / yesterday and an hour 0-23 (or "10pm"). Weather is HOURLY and joined to flights by CRS departure/arrival hour.
 - Weather tool units are ALWAYS: temperature_c / temperature_2m_mean in °C (Celsius), temperature_f is the Fahrenheit conversion, precipitation in mm, wind in km/h. Prefer the tool's `summary` field. Never treat raw temperature_2m_mean as Fahrenheit.
 - If a tool returns n_flights=0 or a note, explain that clearly. Do NOT tell the user to run `flight train` unless the model/metrics tool says the model is missing.
-- Explain results in plain English: ≥15 min late probability, expected arrival delay minutes when present (`predicted_arr_delay_minutes`), congestion/weather drivers, practical advice. For US travelers, state both °C and °F when quoting temperature.
-- When users ask “how late?” or “how many minutes?”, lead with predicted minutes and also mention the ≥15 min risk.
+- Explain results in plain English: probability, congestion/weather drivers, practical advice. For US travelers, state both °C and °F when quoting temperature.
 - Stay on aviation delay / schedule topics. Politely refuse unrelated requests.
 - fl_dow uses DuckDB convention: 0=Sunday … 6=Saturday.
 """
@@ -41,8 +40,7 @@ def _build_tools() -> list[StructuredTool]:
             func=tool_fns.tool_predict_delay,
             name="predict_delay",
             description=(
-                "Predict ≥15 min late probability AND expected arrival delay minutes "
-                "(predicted_arr_delay_minutes). Use for delay risk and “how late?”. "
+                "Predict arrival delay ≥15 min probability. "
                 "Args: op_unique_carrier (code or name e.g. UA/United), "
                 "origin/dest (IATA or name e.g. IAD/Dulles), "
                 "fl_month (1-12), fl_dow (0=Sun..6=Sat), crs_dep_hour (0-23), "

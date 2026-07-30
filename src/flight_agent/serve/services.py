@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import joblib
-import numpy as np
 import pandas as pd
 
 from flight_agent.codes import (
@@ -29,16 +28,6 @@ def load_model():
         raise FileNotFoundError(
             f"Model not found at {path}. Run `flight train` first."
         )
-    return joblib.load(path)
-
-
-@lru_cache
-def load_regressor():
-    """Optional arrival-delay minutes regressor (may be missing on older artifacts)."""
-    settings = get_settings()
-    path = Path(settings.model_dir) / "model_regressor.joblib"
-    if not path.exists():
-        return None
     return joblib.load(path)
 
 
@@ -255,28 +244,11 @@ def predict_delay(
     except ValueError:
         load_model.cache_clear()
         load_meta.cache_clear()
-        load_regressor.cache_clear()
         model = load_model()
         proba = float(model.predict_proba(row)[0, 1])
 
     thr = decision_threshold()
     label = int(proba >= thr)
-
-    predicted_minutes: float | None = None
-    regressor = load_regressor()
-    if regressor is not None:
-        try:
-            minutes = float(regressor.predict(row)[0])
-        except ValueError:
-            load_regressor.cache_clear()
-            regressor = load_regressor()
-            minutes = float(regressor.predict(row)[0]) if regressor is not None else None
-        if minutes is not None:
-            meta = load_meta()
-            lo = float(meta.get("regression_clip_min", -30) or -30)
-            hi = float(meta.get("regression_clip_max", 240) or 240)
-            predicted_minutes = float(np.clip(minutes, lo, hi))
-
     drivers = {
         "origin_hist_avg_taxi_out": enriched["origin_hist_avg_taxi_out"],
         "origin_hist_avg_nas_delay": enriched["origin_hist_avg_nas_delay"],
@@ -288,43 +260,16 @@ def predict_delay(
         "origin_precip_mm": enriched.get("origin_precip_mm"),
         "origin_wind_kmh": enriched.get("origin_wind_kmh"),
     }
-    if predicted_minutes is not None:
-        risk = (
-            f"≥15 min late risk {proba:.0%}"
-            if label
-            else f"on-time risk favored ({proba:.0%} ≥15 min)"
-        )
-        if predicted_minutes >= 15:
-            interpretation = (
-                f"{risk}; expected arrival delay ≈ {predicted_minutes:.0f} minutes"
-            )
-        elif predicted_minutes >= 5:
-            interpretation = (
-                f"{risk}; expected arrival ≈ {predicted_minutes:.0f} minutes late"
-            )
-        elif predicted_minutes >= -5:
-            interpretation = (
-                f"{risk}; expected arrival near schedule ({predicted_minutes:+.0f} min)"
-            )
-        else:
-            interpretation = (
-                f"{risk}; expected arrival ≈ {predicted_minutes:.0f} minutes vs schedule"
-            )
-    else:
-        interpretation = (
-            "Likely delayed ≥15 min" if label else "Likely on-time (<15 min late)"
-        )
-
     out: dict[str, Any] = {
         "delay_probability": round(proba, 4),
         "predicted_delay_15": label,
         "threshold": round(thr, 4),
         "inputs": row.iloc[0].to_dict(),
         "congestion_drivers": drivers,
-        "interpretation": interpretation,
+        "interpretation": (
+            "Likely delayed ≥15 min" if label else "Likely on-time (<15 min late)"
+        ),
     }
-    if predicted_minutes is not None:
-        out["predicted_arr_delay_minutes"] = round(predicted_minutes, 1)
     if weather_as_of:
         out["weather_as_of"] = weather_as_of
     return out

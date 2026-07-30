@@ -39,11 +39,6 @@ model:
   # After ingest, retrain when new BTS months land, the retention window slides,
   # or weather files are refreshed (daily Open-Meteo or weekly co-ingest).
   auto_retrain: true
-  # Also train an arrival-delay minutes regressor (model_regressor.joblib).
-  train_regressor: true
-  # Clip extreme delay minutes for regression stability.
-  regression_clip_min: -30
-  regression_clip_max: 240
   # false = train on all lake flights (hub↔spoke OK); true = both ends must be hubs.
   hub_pair_only: false
   # Reservoir-sample this many rows into pandas (full lake is ~10M+ and OOMs).

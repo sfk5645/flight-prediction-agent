@@ -20,7 +20,7 @@ def tool_predict_delay(
     origin_precip_mm: Optional[float] = None,
     origin_wind_kmh: Optional[float] = None,
 ) -> str:
-    """Predict ≥15 min late probability and expected arrival delay in minutes."""
+    """Predict probability that a flight arrives 15+ minutes late (uses congestion + weather)."""
     try:
         result = services.predict_delay(
             op_unique_carrier=normalize_carrier(op_unique_carrier) or op_unique_carrier,

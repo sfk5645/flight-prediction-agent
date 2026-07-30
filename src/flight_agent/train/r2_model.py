@@ -10,7 +10,6 @@ from flight_agent.ingest.r2_sync import _client
 MODEL_R2_PREFIX = "models/"
 MODEL_FILES = (
     "model.joblib",
-    "model_regressor.joblib",
     "meta.json",
     "metrics.json",
     "train_state.json",
