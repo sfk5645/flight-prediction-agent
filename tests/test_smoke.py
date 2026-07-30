@@ -174,6 +174,30 @@ def test_filter_weather_frame():
     assert list(filtered["date"]) == ["2024-06-01", "2025-01-01"]
 
 
+def test_should_auto_retrain_on_weather(tmp_path, monkeypatch):
+    from flight_agent.ingest.schedule import IngestWindow, YearMonth
+    from flight_agent.train import retrain as rt
+
+    monkeypatch.setenv("FLIGHT_MODEL_DIR", str(tmp_path / "models"))
+    from flight_agent.config import get_settings
+
+    get_settings.cache_clear()
+    (tmp_path / "models").mkdir(parents=True)
+    (tmp_path / "models" / "model.joblib").write_bytes(b"x")
+    window = IngestWindow(
+        start=YearMonth(2022, 7),
+        end=YearMonth(2026, 5),
+        mode="rolling",
+        months=[],
+    )
+    rt.mark_trained(window, reason="baseline")
+    needed, reason = rt.should_auto_retrain(window, weather_updated=False)
+    assert needed is False
+    needed2, reason2 = rt.should_auto_retrain(window, weather_updated=True)
+    assert needed2 is True
+    assert reason2 == "weather_updated"
+
+
 def test_weather_window_extends_past_bts(monkeypatch):
     from datetime import date
 

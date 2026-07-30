@@ -1,8 +1,8 @@
 name: Daily weather refresh
 
-# Daily: pull Open-Meteo hub weather through today → R2.
-# BTS flight months stay on the weekly lake job; weather-only updates do not retrain.
-# Serve reads stg_weather from raw/weather Parquet on R2 (no dbt rebuild required).
+# Daily: pull Open-Meteo hub weather through today → R2, then rebuild marts + retrain.
+# BTS flight months stay on the weekly lake job; weather-only days still refresh the model
+# so delay features track current conditions.
 
 on:
   schedule:
@@ -13,11 +13,15 @@ on:
         description: "Force synthetic weather (ignore live Open-Meteo / R2)"
         type: boolean
         default: false
+      skip_retrain:
+        description: "Ingest weather only (skip dbt + train)"
+        type: boolean
+        default: false
 
 jobs:
   weather:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -32,10 +36,23 @@ jobs:
       - name: Install package
         run: uv sync --all-groups
 
-      - name: Refresh weather
+      - name: Restore prior model / train state
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/local
+            mlflow.db
+          key: model-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            model-${{ github.ref_name }}-
+            model-
+
+      - name: Refresh weather (+ retrain)
         env:
           FLIGHT_DATA_DIR: ${{ github.workspace }}/data
           FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
+          FLIGHT_MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+          FLIGHT_MODEL_DIR: ${{ github.workspace }}/models/local
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -43,10 +60,24 @@ jobs:
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
         run: |
           set -euo pipefail
+          RETRAIN_FLAG="--retrain"
+          if [ "${{ inputs.skip_retrain }}" = "true" ]; then
+            RETRAIN_FLAG="--no-retrain"
+          fi
           if [ "${{ inputs.use_sample }}" = "true" ] || [ -z "${R2_ACCOUNT_ID:-}" ]; then
             echo "Sample/fixed weather smoke (no R2 secrets or forced sample)"
-            uv run flight ingest weather --sample --fixed --full --bts-aligned
+            uv run flight ingest weather --sample --fixed --full --bts-aligned $RETRAIN_FLAG --train-sample-limit 20000
           else
-            echo "Live weather → R2 through today (incremental; always refreshes current month)"
-            uv run flight ingest weather --to-r2 --no-keep-local --incremental --through-today
+            echo "Live weather → R2 through today, then dbt + train"
+            # --retrain forces rebuild even if Parquet already had today's rows
+            uv run flight ingest weather --to-r2 --no-keep-local --incremental --through-today --retrain
           fi
+
+      - name: Upload model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: weather-retrain-model
+          path: |
+            models/local/
+            mlflow.db
+          if-no-files-found: ignore

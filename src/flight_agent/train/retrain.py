@@ -85,6 +85,7 @@ def should_auto_retrain(
     *,
     new_bts_months: int = 0,
     pruned_bts: bool = False,
+    weather_updated: bool = False,
 ) -> tuple[bool, str]:
     """
     Decide whether the sliding window moved enough to warrant a retrain.
@@ -92,6 +93,7 @@ def should_auto_retrain(
     Triggers:
     - no model or no prior train_state
     - new BTS months landed
+    - weather lake refreshed (daily Open-Meteo or weekly co-ingest)
     - retention prune removed BTS months (left edge slid)
     - resolved window start/end differs from last trained window
     """
@@ -104,6 +106,9 @@ def should_auto_retrain(
 
     if new_bts_months > 0:
         return True, f"new_bts_months={new_bts_months}"
+
+    if weather_updated:
+        return True, "weather_updated"
 
     if pruned_bts:
         return True, "retention_prune_moved_window"

@@ -76,7 +76,6 @@ def ingest_all(
     from flight_agent.ingest.weather import ingest_weather
     from flight_agent.train.retrain import (
         auto_retrain_enabled,
-        mark_trained,
         should_auto_retrain,
     )
 
@@ -91,7 +90,7 @@ def ingest_all(
 
     ensure_dirs()
     ingest_airports(to_r2=to_r2, keep_local=keep_local)
-    ingest_weather(
+    weather_paths = ingest_weather(
         use_sample=sample,
         to_r2=to_r2,
         keep_local=keep_local,
@@ -134,23 +133,18 @@ def ingest_all(
         bts_result.window,
         new_bts_months=len(bts_result.months_written),
         pruned_bts=pruned_bts,
+        weather_updated=bool(weather_paths),
     )
     if not needed:
         typer.echo(f"Auto-retrain skipped ({reason}).")
         return
 
-    typer.echo(f"Auto-retrain triggered ({reason}) → dbt build + train…")
-    from_r2 = bool(to_r2)
-    code = _run_dbt_build(from_r2=from_r2)
-    if code != 0:
-        typer.echo("ERROR: dbt build failed; skipping train.", err=True)
-        raise typer.Exit(code)
-
-    from flight_agent.train.train import train_model
-
-    metrics = train_model(sample_limit=train_sample_limit, publish_hf=False)
-    mark_trained(bts_result.window, reason=reason)
-    typer.echo(f"Auto-retrain complete: {metrics}")
+    _run_retrain_pipeline(
+        window=bts_result.window,
+        reason=reason,
+        from_r2=bool(to_r2),
+        train_sample_limit=train_sample_limit,
+    )
 
 
 @ingest_app.command("airports")
@@ -178,8 +172,27 @@ def ingest_weather_cmd(
         help="Extend weather through calendar today (default from config). "
         "Use --bts-aligned to match the BTS publishing window only.",
     ),
+    retrain: Optional[bool] = typer.Option(
+        None,
+        "--retrain/--no-retrain",
+        help="After weather ingest, rebuild marts + train when weather files changed "
+        "(default: configs model.auto_retrain). Daily Actions uses --retrain.",
+    ),
+    train_sample_limit: Optional[int] = typer.Option(
+        None,
+        help="Optional row cap passed to weather-triggered retrain.",
+    ),
 ) -> None:
+    from flight_agent.ingest.schedule import resolve_ingest_window
     from flight_agent.ingest.weather import ingest_weather
+    from flight_agent.train.retrain import auto_retrain_enabled, should_auto_retrain
+
+    if to_r2 and not get_settings().r2_configured:
+        typer.echo("ERROR: --to-r2 requires R2_* credentials in .env", err=True)
+        raise typer.Exit(1)
+    if not keep_local and not to_r2:
+        typer.echo("ERROR: --no-keep-local requires --to-r2.", err=True)
+        raise typer.Exit(1)
 
     ensure_dirs()
     paths = ingest_weather(
@@ -191,6 +204,34 @@ def ingest_weather_cmd(
         through_today=through_today,
     )
     typer.echo(f"Wrote {len(paths)} weather files")
+
+    do_retrain = auto_retrain_enabled() if retrain is None else retrain
+    if not do_retrain:
+        return
+
+    # Use BTS window for train_state identity; weather refresh is the trigger.
+    window = resolve_ingest_window(
+        rolling=False if sample or rolling is False else None,
+        use_sample=sample,
+    )
+    needed, reason = should_auto_retrain(
+        window,
+        weather_updated=bool(paths),
+    )
+    # Explicit --retrain forces a rebuild even if Parquet was already current
+    # (useful when raw weather was updated outside this process).
+    if retrain is True and not needed:
+        needed, reason = True, "weather_retrain_forced"
+    if not needed:
+        typer.echo(f"Auto-retrain skipped ({reason}).")
+        return
+
+    _run_retrain_pipeline(
+        window=window,
+        reason=reason,
+        from_r2=bool(to_r2) or get_settings().r2_configured,
+        train_sample_limit=train_sample_limit if not sample else (train_sample_limit or 20_000),
+    )
 
 
 @ingest_app.command("bts")
@@ -281,6 +322,38 @@ def _dbt_env(*, from_r2: bool = False) -> dict[str, str]:
         env["FLIGHT_PARQUET_ROOT"] = parquet_root_for_dbt(prefer_r2=False)
         env["FLIGHT_DBT_TARGET"] = "dev"
     return env
+
+
+def _run_retrain_pipeline(
+    *,
+    window,
+    reason: str,
+    from_r2: bool,
+    train_sample_limit: Optional[int] = None,
+    push_model: bool = True,
+) -> None:
+    """dbt build → train → mark train_state → optional model push to R2."""
+    from flight_agent.train.retrain import mark_trained
+    from flight_agent.train.train import train_model
+
+    typer.echo(f"Auto-retrain triggered ({reason}) → dbt build + train…")
+    code = _run_dbt_build(from_r2=from_r2)
+    if code != 0:
+        typer.echo("ERROR: dbt build failed; skipping train.", err=True)
+        raise typer.Exit(code)
+
+    metrics = train_model(sample_limit=train_sample_limit, publish_hf=False)
+    mark_trained(window, reason=reason)
+    typer.echo(f"Auto-retrain complete: {metrics}")
+
+    if push_model and get_settings().r2_configured:
+        try:
+            from flight_agent.train.r2_model import push_model_to_r2
+
+            uploaded = push_model_to_r2()
+            typer.echo(f"Model pushed to R2: {uploaded}")
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"WARNING: model push to R2 failed: {exc}", err=True)
 
 
 def _run_dbt_build(*, from_r2: bool = False) -> int:

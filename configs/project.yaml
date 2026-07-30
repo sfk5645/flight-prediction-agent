@@ -35,8 +35,8 @@ model:
   target: arr_delay_15
   test_size: 0.2
   random_state: 42
-  # After ingest, retrain when new BTS months land or the retention window slides.
-  # Weather-only daily refreshes do NOT trigger retrain (labels unchanged).
+  # After ingest, retrain when new BTS months land, the retention window slides,
+  # or weather files are refreshed (daily Open-Meteo or weekly co-ingest).
   auto_retrain: true
   # false = train on all lake flights (hub↔spoke OK); true = both ends must be hubs.
   hub_pair_only: false

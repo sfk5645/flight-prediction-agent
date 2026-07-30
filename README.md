@@ -92,11 +92,11 @@ uv run flight agent "Will DL ATL to LAX on a Monday at 8am be delayed?"
    older than 48 months (same window as local).
 4. **Schedule**
    - [`.github/workflows/daily-pipeline.yml`](.github/workflows/daily-pipeline.yml)
-     — **daily** Open-Meteo weather → R2 through today (no BTS, no retrain).
-     Predictions read fresh `stg_weather` from `raw/weather` on R2.
+     — **daily** Open-Meteo weather → R2 through today, then **dbt + retrain**
+     (and model push to R2). Use workflow input `skip_retrain` to ingest only.
    - [`.github/workflows/weekly-lake-update.yml`](.github/workflows/weekly-lake-update.yml)
-     — **Mondays:** incremental BTS (+ weather) → R2; auto-retrains when the
-     BTS window moves. Model labels stay weekly; weather features stay daily.
+     — **Mondays:** incremental BTS (+ weather) → R2; auto-retrains when new BTS
+     months land, weather updates, or the window moves.
 
 ## MLOps
 
