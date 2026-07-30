@@ -1,8 +1,9 @@
 name: Weekly lake update
 
 # Discover newly published BTS months, upload only missing partitions to R2,
-# prune to retention_months. When the sliding window moves / new months land,
-# auto-retrain runs dbt + train (model.auto_retrain).
+# prune to retention_months. Weather is also refreshed through today here, but
+# the dedicated daily weather workflow keeps Open-Meteo current between Mondays.
+# When the BTS sliding window moves / new months land, auto-retrain runs dbt + train.
 # Requires R2_* secrets. Falls back to sample ingest when secrets are absent.
 
 on:

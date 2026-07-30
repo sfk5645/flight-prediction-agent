@@ -198,3 +198,81 @@ def months_to_ingest(
         return list(window.months)
     existing = list_existing_bts_months(check_local=check_local, check_r2=check_r2)
     return [m for m in window.months if m not in existing]
+
+
+def resolve_weather_window(
+    cfg: dict | None = None,
+    *,
+    as_of: date | None = None,
+    rolling: bool | None = None,
+    use_sample: bool = False,
+    through_today: bool | None = None,
+) -> IngestWindow:
+    """
+    Weather coverage window.
+
+    By default (weather.through_today: true) the end is the current calendar
+    month through ``as_of`` (today), while the start follows the same retention
+    cutoff as BTS. That lets daily weather stay fresh even though BTS labels
+    lag ~1–2 months and only refresh weekly.
+
+    Fixed / sample / through_today=false keep weather aligned to the BTS window
+    (deterministic demos and CI).
+    """
+    cfg = cfg or load_project_config()
+    as_of = as_of or date.today()
+    bts_window = resolve_ingest_window(
+        cfg, as_of=as_of, rolling=rolling, use_sample=use_sample
+    )
+    wx_cfg = cfg.get("weather") or {}
+    if through_today is None:
+        through_today = bool(wx_cfg.get("through_today", True))
+
+    if (
+        not through_today
+        or use_sample
+        or bts_window.mode == "fixed"
+        or rolling is False
+    ):
+        return bts_window
+
+    end = YearMonth(as_of.year, as_of.month)
+    start = bts_window.start
+    if start.as_tuple() > end.as_tuple():
+        start = end
+    months = _iter_months(start, end)
+    return IngestWindow(
+        start=start,
+        end=end,
+        mode="rolling_weather",
+        months=months,
+    )
+
+
+def weather_months_to_fetch(
+    window: IngestWindow,
+    have: set[YearMonth],
+    *,
+    incremental: bool = True,
+    as_of: date | None = None,
+) -> list[YearMonth]:
+    """
+    Months to download for weather.
+
+    Incremental mode skips months already present, but always re-fetches the
+    current calendar month (and the previous month early in the month) so new
+    days land on a daily refresh.
+    """
+    as_of = as_of or date.today()
+    if not incremental:
+        return list(window.months)
+
+    targets = [m for m in window.months if m not in have]
+    force: list[YearMonth] = [YearMonth(as_of.year, as_of.month)]
+    if as_of.day <= 3:
+        force.append(_shift_months(force[0], -1))
+    for m in force:
+        if m in window.months and m not in targets:
+            targets.append(m)
+    targets.sort(key=lambda ym: ym.as_tuple())
+    return targets

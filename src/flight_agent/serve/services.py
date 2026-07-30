@@ -10,6 +10,7 @@ from typing import Any
 import joblib
 import pandas as pd
 
+from flight_agent.codes import normalize_airport, normalize_carrier, parse_weather_date
 from flight_agent.config import get_settings
 from flight_agent.features.build import DEFAULTS, FEATURE_COLUMNS, add_derived_features
 from flight_agent.ingest.warehouse import warehouse_available, warehouse_connection
@@ -126,6 +127,9 @@ def predict_delay(
     dest_weathercode: int | None = None,
     route_hist_pct_delay_15: float | None = None,
 ) -> dict[str, Any]:
+    op_unique_carrier = normalize_carrier(op_unique_carrier) or op_unique_carrier.upper()
+    origin = normalize_airport(origin) or origin.upper()
+    dest = normalize_airport(dest) or dest.upper()
     enriched = _enrich_from_lake(
         op_unique_carrier=op_unique_carrier,
         origin=origin,
@@ -151,7 +155,8 @@ def predict_delay(
         if v is not None:
             enriched[k] = v
 
-    # Pull weather from lake when not provided
+    # Pull weather from lake when not provided (daily lake may be fresher than BTS labels)
+    weather_as_of: dict[str, Any] = {}
     if origin_temp_c is None:
         wx = get_weather(origin)
         if wx.get("temperature_2m_mean") is not None:
@@ -162,6 +167,8 @@ def predict_delay(
             enriched["origin_wind_kmh"] = float(wx["windspeed_10m_max"])
         if wx.get("weathercode") is not None:
             enriched["origin_weathercode"] = int(wx["weathercode"])
+        if wx.get("weather_date") is not None:
+            weather_as_of["origin_weather_date"] = wx["weather_date"]
     if dest_temp_c is None:
         wxd = get_weather(dest)
         if wxd.get("temperature_2m_mean") is not None:
@@ -172,6 +179,8 @@ def predict_delay(
             enriched["dest_wind_kmh"] = float(wxd["windspeed_10m_max"])
         if wxd.get("weathercode") is not None:
             enriched["dest_weathercode"] = int(wxd["weathercode"])
+        if wxd.get("weather_date") is not None:
+            weather_as_of["dest_weather_date"] = wxd["weather_date"]
 
     row = pd.DataFrame(
         [
@@ -238,8 +247,10 @@ def predict_delay(
         "route_hist_pct_delay_15": enriched["route_hist_pct_delay_15"],
         "carrier_hist_pct_delay_15": enriched["carrier_hist_pct_delay_15"],
         "is_peak_hour": enriched["is_peak_hour"],
+        "origin_precip_mm": enriched.get("origin_precip_mm"),
+        "origin_wind_kmh": enriched.get("origin_wind_kmh"),
     }
-    return {
+    out: dict[str, Any] = {
         "delay_probability": round(proba, 4),
         "predicted_delay_15": label,
         "threshold": round(thr, 4),
@@ -249,6 +260,9 @@ def predict_delay(
             "Likely delayed ≥15 min" if label else "Likely on-time (<15 min late)"
         ),
     }
+    if weather_as_of:
+        out["weather_as_of"] = weather_as_of
+    return out
 
 
 def _row_to_dict(row: pd.DataFrame) -> dict[str, Any]:
@@ -268,25 +282,28 @@ def get_route_stats(
     dest: str,
     carrier: str | None = None,
 ) -> dict[str, Any]:
+    origin_c = normalize_airport(origin) or origin.upper()
+    dest_c = normalize_airport(dest) or dest.upper()
+    carrier_c = normalize_carrier(carrier) if carrier else None
     if not warehouse_available():
         return {
-            "origin": origin.upper(),
-            "dest": dest.upper(),
-            "op_unique_carrier": carrier,
+            "origin": origin_c,
+            "dest": dest_c,
+            "op_unique_carrier": carrier_c,
             "n_flights": 0,
             "avg_arr_delay": None,
             "pct_delay_15": None,
             "note": "Warehouse not built; run `flight dbt build --from-r2` then `flight warehouse push`.",
         }
     with warehouse_connection(read_only=True) as con:
-        if carrier:
+        if carrier_c:
             row = con.execute(
                 """
                 select *
                 from flt_route_delay_stats
                 where origin = ? and dest = ? and op_unique_carrier = ?
                 """,
-                [origin.upper(), dest.upper(), carrier.upper()],
+                [origin_c, dest_c, carrier_c],
             ).fetchdf()
         else:
             row = con.execute(
@@ -304,14 +321,14 @@ def get_route_stats(
                 where origin = ? and dest = ?
                 group by 1, 2
                 """,
-                [origin.upper(), dest.upper()],
+                [origin_c, dest_c],
             ).fetchdf()
 
     if row.empty:
         return {
-            "origin": origin.upper(),
-            "dest": dest.upper(),
-            "op_unique_carrier": carrier.upper() if carrier else None,
+            "origin": origin_c,
+            "dest": dest_c,
+            "op_unique_carrier": carrier_c,
             "n_flights": 0,
             "avg_arr_delay": None,
             "pct_delay_15": None,
@@ -322,9 +339,10 @@ def get_route_stats(
 
 def get_airport_congestion(airport: str, hour: int) -> dict[str, Any]:
     """Historical congestion profile for an airport at a clock hour."""
-    airport = airport.upper()
+    airport_c = normalize_airport(airport) or airport.upper()
+    hour_i = int(hour) % 24
     if not warehouse_available():
-        return {"airport": airport, "hour": hour, "note": "Warehouse not built."}
+        return {"airport": airport_c, "hour": hour_i, "note": "Warehouse not built."}
     with warehouse_connection(read_only=True) as con:
         row = con.execute(
             """
@@ -332,60 +350,92 @@ def get_airport_congestion(airport: str, hour: int) -> dict[str, Any]:
             from flt_airport_hour_stats
             where airport = ? and hour = ?
             """,
-            [airport, hour],
+            [airport_c, hour_i],
         ).fetchdf()
     if row.empty:
         return {
-            "airport": airport,
-            "hour": hour,
+            "airport": airport_c,
+            "hour": hour_i,
             "note": "No congestion profile for this airport/hour.",
         }
     return _row_to_dict(row)
 
 
 def get_carrier_stats(carrier: str) -> dict[str, Any]:
-    carrier = carrier.upper()
+    carrier_c = normalize_carrier(carrier) or carrier.upper()
     if not warehouse_available():
-        return {"op_unique_carrier": carrier, "note": "Warehouse not built."}
+        return {"op_unique_carrier": carrier_c, "note": "Warehouse not built."}
     with warehouse_connection(read_only=True) as con:
         row = con.execute(
             """
             select * from flt_carrier_delay_stats
             where op_unique_carrier = ?
             """,
-            [carrier],
+            [carrier_c],
         ).fetchdf()
     if row.empty:
-        return {"op_unique_carrier": carrier, "note": "No carrier stats."}
+        return {"op_unique_carrier": carrier_c, "note": "No carrier stats."}
     return _row_to_dict(row)
 
 
 def get_weather(airport: str, date: str | None = None) -> dict[str, Any]:
-    airport = airport.upper()
+    airport_c = normalize_airport(airport) or airport.upper()
+    iso_date, date_note = parse_weather_date(date)
     if not warehouse_available():
-        return {"airport": airport, "note": "Warehouse not built."}
-    with warehouse_connection(read_only=True) as con:
-        if date:
-            df = con.execute(
-                """
-                select * from stg_weather
-                where airport = ? and weather_date = cast(? as date)
-                """,
-                [airport, date],
-            ).fetchdf()
-        else:
-            df = con.execute(
-                """
-                select * from stg_weather
-                where airport = ?
-                order by weather_date desc
-                limit 1
-                """,
-                [airport],
-            ).fetchdf()
-    if df.empty:
-        return {"airport": airport, "date": date, "note": "No weather rows found."}
-    return _row_to_dict(df)
+        return {"airport": airport_c, "note": "Warehouse not built."}
+    try:
+        with warehouse_connection(read_only=True) as con:
+            df = None
+            if iso_date:
+                df = con.execute(
+                    """
+                    select * from stg_weather
+                    where airport = ? and weather_date = cast(? as date)
+                    """,
+                    [airport_c, iso_date],
+                ).fetchdf()
+            if df is None or df.empty:
+                latest = con.execute(
+                    """
+                    select * from stg_weather
+                    where airport = ?
+                    order by weather_date desc
+                    limit 1
+                    """,
+                    [airport_c],
+                ).fetchdf()
+                if iso_date and not latest.empty:
+                    date_note = "; ".join(
+                        p
+                        for p in [
+                            date_note,
+                            f"No weather row for {iso_date}; showing latest lake day instead.",
+                        ]
+                        if p
+                    )
+                    df = latest
+                else:
+                    df = latest
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "airport": airport_c,
+            "date": iso_date or date,
+            "note": f"Weather lookup failed: {exc}",
+        }
+    if df is None or df.empty:
+        out = {
+            "airport": airport_c,
+            "date": iso_date or date,
+            "note": "No weather rows found for that airport "
+            "(lake weather is daily and may lag the calendar).",
+        }
+        if date_note:
+            out["date_note"] = date_note
+        return out
+    result = _row_to_dict(df)
+    if date_note:
+        result["date_note"] = date_note
+    return result
 
 
 def load_metrics() -> dict[str, Any]:

@@ -174,6 +174,48 @@ def test_filter_weather_frame():
     assert list(filtered["date"]) == ["2024-06-01", "2025-01-01"]
 
 
+def test_weather_window_extends_past_bts(monkeypatch):
+    from datetime import date
+
+    from flight_agent.ingest import schedule as sch
+    from flight_agent.ingest.schedule import (
+        YearMonth,
+        resolve_ingest_window,
+        resolve_weather_window,
+        weather_months_to_fetch,
+    )
+
+    monkeypatch.setattr(
+        sch,
+        "discover_latest_bts_month",
+        lambda as_of=None, max_lookback=8: YearMonth(2026, 5),
+    )
+
+    cfg = {
+        "hubs": ["IAD"],
+        "date_range": {"mode": "rolling"},
+        "retention_months": 48,
+        "weather": {"through_today": True},
+        "sample": {"rows_per_month": 10},
+    }
+    as_of = date(2026, 7, 30)
+    bts = resolve_ingest_window(cfg, as_of=as_of, use_sample=False)
+    assert bts.end == YearMonth(2026, 5)
+
+    wx = resolve_weather_window(cfg, as_of=as_of, use_sample=False, through_today=True)
+    assert wx.end == YearMonth(2026, 7)
+    assert wx.start == bts.start
+
+    have = {YearMonth(2026, 5), YearMonth(2026, 6), YearMonth(2026, 7)}
+    targets = weather_months_to_fetch(wx, have, incremental=True, as_of=as_of)
+    assert YearMonth(2026, 7) in targets  # always refresh current month
+
+    aligned = resolve_weather_window(
+        cfg, as_of=as_of, use_sample=False, through_today=False
+    )
+    assert aligned.end == bts.end
+
+
 def test_predict_request_model():
     body = PredictRequest(
         op_unique_carrier="DL",
@@ -184,3 +226,42 @@ def test_predict_request_model():
         crs_dep_hour=8,
     )
     assert body.origin == "ATL"
+
+
+def test_normalize_airline_airport_names():
+    from flight_agent.codes import (
+        find_airports_in_text,
+        find_carriers_in_text,
+        normalize_airport,
+        normalize_carrier,
+        parse_weather_date,
+    )
+
+    assert normalize_carrier("United Airlines") == "UA"
+    assert normalize_carrier("delta") == "DL"
+    assert normalize_airport("Dulles") == "IAD"
+    assert normalize_airport("O'Hare") == "ORD"
+    assert normalize_airport("dallas fort worth") == "DFW"
+
+    assert find_carriers_in_text("delay rate on United") == ["UA"]
+    assert find_airports_in_text("weather at Dulles today") == ["IAD"]
+    assert "LAX" not in find_airports_in_text("will it be delayed?")
+
+    iso, note = parse_weather_date("today at 10pm")
+    assert iso is not None and len(iso) == 10
+    assert note and "daily" in note.lower()
+
+    iso2, note2 = parse_weather_date("not-a-date")
+    assert iso2 is None
+    assert note2 and "Could not parse" in note2
+
+
+def test_weather_tool_accepts_natural_date():
+    import json
+
+    from flight_agent.agent.tools import tool_weather
+
+    # Must not raise even when lake has no row for "today"
+    payload = json.loads(tool_weather("Dulles", "today at 10pm"))
+    assert payload.get("airport") == "IAD"
+    assert "error" not in payload or "cast" not in str(payload.get("error", "")).lower()

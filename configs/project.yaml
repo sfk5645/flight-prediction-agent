@@ -7,7 +7,7 @@ hubs:
   - IAD
   - DFW
 
-# Ingest window for BTS + weather.
+# Ingest window for BTS (flight labels).
 # mode: rolling — end = latest published BTS PREZIP month; start = retention window.
 # mode: fixed  — use start_*/end_* below (demos, backfills, reproducible CI).
 date_range:
@@ -19,7 +19,11 @@ date_range:
   end_month: 2
 
 weather:
-  # daily archive from Open-Meteo
+  # Daily Open-Meteo archive. through_today=true extends past BTS lag so serving
+  # features stay fresh; BTS/labels still refresh weekly and retrain on that cadence.
+  through_today: true
+  # On incremental refresh, re-pull this many trailing days for late revisions.
+  daily_lookback_days: 7
   timezone: America/New_York
   variables:
     - temperature_2m_mean
@@ -32,6 +36,7 @@ model:
   test_size: 0.2
   random_state: 42
   # After ingest, retrain when new BTS months land or the retention window slides.
+  # Weather-only daily refreshes do NOT trigger retrain (labels unchanged).
   auto_retrain: true
   # false = train on all lake flights (hub↔spoke OK); true = both ends must be hubs.
   hub_pair_only: false
@@ -55,4 +60,5 @@ sample:
 # Sliding window: keep only this many months of BTS/weather in the lake + DuckDB.
 # Older local partitions, R2 objects, and DuckDB rows are removed by `flight ingest prune`
 # (also runs automatically after `flight ingest all`).
+# Weather may extend a few months past the latest BTS month (through today).
 retention_months: 48

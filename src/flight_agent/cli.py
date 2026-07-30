@@ -97,6 +97,7 @@ def ingest_all(
         keep_local=keep_local,
         incremental=incremental,
         rolling=rolling,
+        through_today=None if sample or rolling is False else True,
     )
     bts_result = ingest_bts(
         use_sample=sample,
@@ -171,6 +172,12 @@ def ingest_weather_cmd(
     keep_local: bool = typer.Option(True, "--keep-local/--no-keep-local"),
     incremental: bool = typer.Option(True, "--incremental/--full"),
     rolling: Optional[bool] = typer.Option(None, "--rolling/--fixed"),
+    through_today: Optional[bool] = typer.Option(
+        None,
+        "--through-today/--bts-aligned",
+        help="Extend weather through calendar today (default from config). "
+        "Use --bts-aligned to match the BTS publishing window only.",
+    ),
 ) -> None:
     from flight_agent.ingest.weather import ingest_weather
 
@@ -181,6 +188,7 @@ def ingest_weather_cmd(
         keep_local=keep_local,
         incremental=incremental,
         rolling=rolling,
+        through_today=through_today,
     )
     typer.echo(f"Wrote {len(paths)} weather files")
 

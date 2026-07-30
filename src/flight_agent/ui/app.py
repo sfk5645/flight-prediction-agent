@@ -34,10 +34,10 @@ with st.sidebar:
     st.markdown(
         """
 **Example questions**
-- Will DL from ATL to LAX on a Monday morning be delayed?
-- What's the historical delay rate ORD→JFK on United?
-- How congested is DFW at 5pm (taxi / NAS)?
-- How often is IAD→DFW delayed in winter?
+- Will Delta from Atlanta to Los Angeles on a Monday morning be delayed?
+- What's the historical delay rate O'Hare→JFK on American?
+- How's the weather at Dulles today?
+- How congested is Dallas Fort Worth at 5pm?
 - How good is the delay model?
 """
     )

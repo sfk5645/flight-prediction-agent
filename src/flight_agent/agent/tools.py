@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+from flight_agent.codes import normalize_airport, normalize_carrier
 from flight_agent.serve import services
 
 
@@ -22,9 +23,9 @@ def tool_predict_delay(
     """Predict probability that a flight arrives 15+ minutes late (uses congestion + weather)."""
     try:
         result = services.predict_delay(
-            op_unique_carrier=op_unique_carrier,
-            origin=origin,
-            dest=dest,
+            op_unique_carrier=normalize_carrier(op_unique_carrier) or op_unique_carrier,
+            origin=normalize_airport(origin) or origin,
+            dest=normalize_airport(dest) or dest,
             fl_month=fl_month,
             fl_dow=fl_dow,
             crs_dep_hour=crs_dep_hour,
@@ -34,24 +35,52 @@ def tool_predict_delay(
         )
     except FileNotFoundError as exc:
         return json.dumps({"error": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": str(exc)})
     return json.dumps(result)
 
 
 def tool_route_stats(origin: str, dest: str, carrier: Optional[str] = None) -> str:
     """Historical delay + taxi/NAS stats for a route (optional carrier filter)."""
-    return json.dumps(services.get_route_stats(origin, dest, carrier))
+    try:
+        return json.dumps(
+            services.get_route_stats(
+                normalize_airport(origin) or origin,
+                normalize_airport(dest) or dest,
+                normalize_carrier(carrier) if carrier else None,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": str(exc)})
 
 
 def tool_weather(airport: str, date: Optional[str] = None) -> str:
-    """Weather features for an airport IATA code, optional date YYYY-MM-DD."""
-    return json.dumps(services.get_weather(airport, date))
+    """Weather features for an airport (IATA or name); date YYYY-MM-DD / today / yesterday."""
+    try:
+        return json.dumps(
+            services.get_weather(normalize_airport(airport) or airport, date)
+        )
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": str(exc), "airport": airport, "date": date})
 
 
 def tool_airport_congestion(airport: str, hour: int) -> str:
     """Historical congestion for airport at hour: taxi, NAS delay, ops volume, delay rate."""
-    return json.dumps(services.get_airport_congestion(airport, hour))
+    try:
+        return json.dumps(
+            services.get_airport_congestion(
+                normalize_airport(airport) or airport, hour
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": str(exc)})
 
 
 def tool_model_metrics() -> str:
     """Return offline evaluation metrics for the delay model."""
-    return json.dumps(services.load_metrics() or {"note": "No metrics yet; run flight train."})
+    try:
+        return json.dumps(
+            services.load_metrics() or {"note": "No metrics yet; run flight train."}
+        )
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": str(exc)})

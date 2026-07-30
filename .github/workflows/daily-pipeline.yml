@@ -1,24 +1,21 @@
-name: Daily pipeline
+name: Daily weather refresh
 
-# Daily: light weather refresh + dbt tests when raw data exists.
-# Full BTS months update infrequently — use workflow_dispatch or weekly job for heavy ingest.
+# Daily: pull Open-Meteo hub weather through today → R2.
+# BTS flight months stay on the weekly lake job; weather-only updates do not retrain.
+# Serve reads stg_weather from raw/weather Parquet on R2 (no dbt rebuild required).
 
 on:
   schedule:
-    - cron: "0 12 * * *"
+    - cron: "0 12 * * *" # daily 12:00 UTC
   workflow_dispatch:
     inputs:
       use_sample:
-        description: "Use synthetic BTS/weather instead of live downloads"
-        type: boolean
-        default: true
-      run_train:
-        description: "Retrain model after dbt"
+        description: "Force synthetic weather (ignore live Open-Meteo / R2)"
         type: boolean
         default: false
 
 jobs:
-  pipeline:
+  weather:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -35,38 +32,21 @@ jobs:
       - name: Install package
         run: uv sync --all-groups
 
-      - name: Ingest
+      - name: Refresh weather
         env:
           FLIGHT_DATA_DIR: ${{ github.workspace }}/data
           FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.use_sample }}" = "false" ]; then
-            # Live rolling incremental (local Actions runner lake)
-            uv run flight ingest all --incremental
+          set -euo pipefail
+          if [ "${{ inputs.use_sample }}" = "true" ] || [ -z "${R2_ACCOUNT_ID:-}" ]; then
+            echo "Sample/fixed weather smoke (no R2 secrets or forced sample)"
+            uv run flight ingest weather --sample --fixed --full --bts-aligned
           else
-            # Scheduled / default: short fixed sample window (configs date_range fixed bounds)
-            # Skip auto-retrain — CI smoke uses the separate demo/train job when needed
-            uv run flight ingest all --sample --fixed --full --no-retrain
+            echo "Live weather → R2 through today (incremental; always refreshes current month)"
+            uv run flight ingest weather --to-r2 --no-keep-local --incremental --through-today
           fi
-
-      - name: dbt build
-        env:
-          FLIGHT_DATA_DIR: ${{ github.workspace }}/data
-          FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
-        run: uv run flight dbt build
-
-      - name: Train (optional)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_train }}
-        env:
-          FLIGHT_DATA_DIR: ${{ github.workspace }}/data
-          FLIGHT_DUCKDB_PATH: ${{ github.workspace }}/data/duckdb/flight_agent.duckdb
-          FLIGHT_MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
-          FLIGHT_MODEL_DIR: ${{ github.workspace }}/models/local
-        run: uv run flight train --sample-limit 20000
-
-      - name: Upload curated duckdb artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: duckdb-warehouse
-          path: data/duckdb/
-          if-no-files-found: ignore
