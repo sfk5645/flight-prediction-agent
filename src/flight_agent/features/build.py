@@ -65,6 +65,8 @@ DERIVED_COLUMNS = [
 FEATURE_COLUMNS = BASE_COLUMNS + DERIVED_COLUMNS
 CATEGORICAL = ["op_unique_carrier", "origin", "dest"]
 TARGET = "arr_delay_15"
+REGRESSION_TARGET = "arr_delay"
+
 
 DEFAULTS = {
     "distance": 800.0,
@@ -210,13 +212,15 @@ def build_training_frame(sample_limit: int | None = None) -> pd.DataFrame:
       coalesce(f.carrier_hist_pct_delay_15, {DEFAULTS['carrier_hist_pct_delay_15']}) as carrier_hist_pct_delay_15,
       coalesce(f.carrier_hist_avg_taxi_out, {DEFAULTS['carrier_hist_avg_taxi_out']}) as carrier_hist_avg_taxi_out,
       coalesce(f.carrier_hist_avg_late_aircraft_delay, {DEFAULTS['carrier_hist_avg_late_aircraft_delay']}) as carrier_hist_avg_late_aircraft_delay,
-      f.arr_delay_15
+      f.arr_delay_15,
+      f.arr_delay
     from flt_flights_with_weather f
     left join route_hist r
       on f.origin = r.origin
      and f.dest = r.dest
      and f.op_unique_carrier = r.op_unique_carrier
     where f.arr_delay_15 is not null
+      and f.arr_delay is not null
       and f.crs_dep_hour is not null
       {hub_filter}
     """

@@ -474,7 +474,7 @@ def train_cmd(
     ),
     publish_hf: bool = typer.Option(False, "--publish-hf", help="Push model to Hugging Face Hub."),
 ) -> None:
-    """Train delay classifier and log to MLflow."""
+    """Train delay classifier (+ minutes regressor) and log to MLflow."""
     from flight_agent.ingest.schedule import resolve_ingest_window
     from flight_agent.train.retrain import mark_trained
     from flight_agent.train.train import train_model
